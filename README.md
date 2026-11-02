@@ -1,6 +1,14 @@
 # NetDebug
 
+[![Release](https://img.shields.io/github/v/release/tangshenfei/NetDebug)](https://github.com/tangshenfei/NetDebug/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 本机运行、原生窗口内嵌 WebView2 的多协议网络调试工作台。后端全部用 C 实现，前端是内嵌在可执行文件里的单页应用。
+
+## 下载
+
+Windows 免安装版：[Releases](https://github.com/tangshenfei/NetDebug/releases) 下载 `netdebug-<版本>-win64.zip`，解压双击 `netdebug.exe` 即可，无需安装、不写注册表（需要系统 WebView2 Runtime，Win11 自带）。
+
 
 ## 当前状态（M6）
 
