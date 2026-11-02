@@ -7,7 +7,12 @@
 
 ## 下载
 
-Windows 免安装版：[Releases](https://github.com/tangshenfei/NetDebug/releases) 下载 `netdebug-<版本>-win64.zip`，解压双击 `netdebug.exe` 即可，无需安装、不写注册表（需要系统 WebView2 Runtime，Win11 自带）。
+[Releases](https://github.com/tangshenfei/NetDebug/releases) 提供两个平台的开箱包：
+
+- **Windows x64**：`netdebug-<版本>-win64.zip`，解压双击 `netdebug.exe`，免安装、不写注册表（需要系统 WebView2 Runtime，Win11 自带）
+- **Linux x86_64**：`netdebug-<版本>-linux-x86_64.tar.gz`，解压后 `chmod +x netdebug && ./netdebug`（需 glibc ≥ 2.34 + GTK3 + WebKitGTK 4.1，即 Ubuntu 22.04+ / Debian 12+ / Fedora 35+）
+
+其他发行版或架构按下面的「构建」一节自行编译即可。
 
 
 ## 当前状态（M6）

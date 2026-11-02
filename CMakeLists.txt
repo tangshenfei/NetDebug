@@ -14,6 +14,12 @@ if(NOT MSVC)
     add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 endif()
 
+# Linux: 关掉 glibc 2.38+ 的 C23 strtol 重定向（含第三方静态库），
+# 使产出的二进制仍可在 glibc 2.34+（Ubuntu 22.04 / Debian 12）上运行。
+if(NOT WIN32)
+    add_compile_options(-include "${CMAKE_CURRENT_SOURCE_DIR}/cmake/glibc_compat.h")
+endif()
+
 if(WIN32)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
