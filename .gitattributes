@@ -1,0 +1,17 @@
+# 统一换行符：仓库内一律 LF，工作区按 core.autocrlf 处理
+* text=auto
+
+# 二进制文件不做文本转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.dll binary
+*.exe binary
+*.lib binary
+*.a binary
+*.zip binary
+
+# 第三方源码保持原样
+third_party/** -text
