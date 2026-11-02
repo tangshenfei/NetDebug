@@ -1,0 +1,36 @@
+# ---------- 构建产物 ----------
+build/
+build-linux/
+out/
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+
+# ---------- 本地工具链（体积大，不入库） ----------
+tools/
+
+# ---------- 运行时数据 ----------
+.data/
+.data-*/
+.edge*/
+.tmp/
+runtime.json
+downloads/
+*.log
+
+# ---------- 文档截图（可重新生成） ----------
+docs/qa/
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ---------- 压缩包 ----------
+*.zip
+*.7z
+*.tar.gz

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "NetDebug LibreSpeed",
+    "server": "/",
+    "dlURL": "garbage.php",
+    "ulURL": "empty.php",
+    "pingURL": "empty.php",
+    "getIpURL": "getIP.php"
+  }
+]

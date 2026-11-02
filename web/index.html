@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetDebug · 网络调试工作台</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%232563EB'/><text x='32' y='45' font-size='40' text-anchor='middle' fill='white' font-family='Segoe UI' font-weight='bold'>N</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="dot"></span>
+        <div>
+          <div class="brand-name">NetDebug</div>
+          <div class="brand-sub" id="meta-line">本机网络调试工作台</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span>监听服务</span>
+          <button class="icon-btn" id="btn-new" title="新建服务">＋</button>
+        </div>
+        <div id="service-list" class="list"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span>客户端会话</span>
+          <button class="icon-btn" id="btn-new-sess" title="新建会话">＋</button>
+        </div>
+        <div id="session-list" class="list"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span>工具</span>
+        </div>
+        <div class="tool-list">
+          <button class="tool-btn" id="btn-http">HTTP 调试</button>
+          <button class="tool-btn" id="btn-ftp">FTP 文件</button>
+          <button class="tool-btn" id="btn-smb">SMB 文件</button>
+          <button class="tool-btn" id="btn-tftp">TFTP 传输</button>
+        </div>
+      </div>
+
+      <div class="panel grow">
+        <div class="panel-head">
+          <span>当前连接</span>
+          <span class="muted" id="conn-count"></span>
+        </div>
+        <div id="conn-list" class="list"></div>
+      </div>
+
+      <div class="sidebar-foot">
+        <div id="lan-warning" class="warn hidden">有服务对局域网开放</div>
+        <div id="status-line" class="muted">连接中…</div>
+      </div>
+    </aside>
+
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+
+    <main class="main">
+      <div class="mobile-bar">
+        <button class="icon-btn" id="btn-sidebar" title="打开菜单">☰</button>
+        <span class="mobile-title">NetDebug</span>
+      </div>
+      <div class="tabs" id="tabs"></div>
+
+      <section class="workspace">
+        <div class="welcome" id="welcome">
+          <h1>网络调试工作台</h1>
+          <p>在左侧新建一个监听服务，或从「当前连接」打开一条链路。</p>
+          <div class="welcome-grid">
+            <div class="welcome-card">
+              <h3>1. 选网卡与地址族</h3>
+              <p>每个服务都可以绑定全部地址、某块网卡，或某个具体 IP，并选择 IPv4 / IPv6 / 双栈。</p>
+            </div>
+            <div class="welcome-card">
+              <h3>2. 先测试绑定</h3>
+              <p>启动前点「测试绑定」，会逐个地址告诉你哪条成功、哪条被占用、为什么失败。</p>
+            </div>
+            <div class="welcome-card">
+              <h3>3. 实时收发</h3>
+              <p>设备连上后，数据通过 WebSocket 推到这个页面，支持文本与十六进制两种视图。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="terminal hidden" id="terminal">
+          <div class="term-head">
+            <div class="term-title">
+              <span class="badge" id="term-proto">raw</span>
+              <span id="term-peer">—</span>
+              <span class="arrow">→</span>
+              <span id="term-local" class="muted">—</span>
+            </div>
+            <div class="term-stats">
+              <span id="term-state" class="state">closed</span>
+              <span id="term-rx" class="muted">RX 0 B</span>
+              <span id="term-tx" class="muted">TX 0 B</span>
+              <button class="ghost-btn" id="btn-clear">清空</button>
+              <label class="check"><input type="checkbox" id="opt-hex"> HEX</label>
+              <label class="check"><input type="checkbox" id="opt-ts" checked> 时间戳</label>
+            </div>
+          </div>
+          <pre class="term-out" id="term-out"></pre>
+          <div class="term-send">
+            <select id="send-enc" title="发送编码">
+              <option value="utf8">文本</option>
+              <option value="hex">HEX</option>
+            </select>
+            <select id="send-eol" title="行尾">
+              <option value="none">无行尾</option>
+              <option value="crlf" selected>CRLF</option>
+              <option value="lf">LF</option>
+              <option value="cr">CR</option>
+            </select>
+            <input id="send-input" type="text" placeholder="输入要发送的数据，回车发送" autocomplete="off" spellcheck="false">
+            <button class="primary" id="send-btn">发送</button>
+          </div>
+        </div>
+
+        <section class="http-view hidden" id="http-view">
+          <div class="http-bar">
+            <select id="http-method">
+              <option>GET</option>
+              <option>POST</option>
+              <option>PUT</option>
+              <option>PATCH</option>
+              <option>DELETE</option>
+              <option>HEAD</option>
+              <option>OPTIONS</option>
+            </select>
+            <input id="http-url" type="text" placeholder="http://127.0.0.1:8080/api/status" spellcheck="false" autocomplete="off">
+            <button class="primary" id="http-send">发送</button>
+          </div>
+          <div class="http-opts">
+            <label class="check"><input type="checkbox" id="http-follow" checked> 跟随重定向</label>
+            <label class="check">超时 <input id="http-timeout" type="number" value="15000" min="1000" max="120000"> ms</label>
+            <span id="http-status" class="muted">就绪</span>
+            <span id="http-metrics" class="muted"></span>
+          </div>
+          <div class="http-grid">
+            <div class="http-pane">
+              <div class="pane-head">请求头 <span class="muted">每行 Name: value</span></div>
+              <textarea id="http-headers" spellcheck="false">Accept: application/json</textarea>
+              <div class="pane-head">
+                请求体
+                <select id="http-body-enc">
+                  <option value="utf8">UTF-8</option>
+                  <option value="hex">HEX</option>
+                </select>
+              </div>
+              <textarea id="http-body" spellcheck="false" placeholder="请求体（GET 可留空）"></textarea>
+            </div>
+            <div class="http-pane">
+              <div class="pane-head">
+                响应
+                <span class="resp-tabs">
+                  <button class="mini-btn" data-hview="text">文本</button>
+                  <button class="mini-btn" data-hview="hex">HEX</button>
+                  <button class="mini-btn" data-hview="raw">原始</button>
+                </span>
+              </div>
+              <pre id="http-response" class="http-resp">还没有请求</pre>
+              <div class="pane-head">响应头</div>
+              <div id="http-resp-headers" class="http-headers"></div>
+              <details class="http-raw">
+                <summary>原始请求 / 响应头</summary>
+                <pre id="http-raw"></pre>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <section class="ftp-view hidden" id="ftp-view">
+          <div class="http-bar">
+            <input id="ftp-host" type="text" placeholder="127.0.0.1" value="127.0.0.1">
+            <input id="ftp-port" type="number" value="21" style="width:90px">
+            <input id="ftp-user" type="text" placeholder="用户" value="anonymous" style="width:140px">
+            <input id="ftp-pass" type="password" placeholder="密码" style="width:140px">
+            <button class="primary" id="ftp-connect">连接</button>
+          </div>
+          <div class="ftp-status">
+            <span id="ftp-state" class="muted">未连接</span>
+            <span id="ftp-pwd" class="ftp-path"></span>
+            <span class="spacer"></span>
+            <button class="ghost-btn" id="ftp-up">上级</button>
+            <button class="ghost-btn" id="ftp-refresh">刷新</button>
+            <button class="ghost-btn" id="ftp-mkdir">新建目录</button>
+            <label class="ghost-btn">上传<input id="ftp-upload" type="file" hidden></label>
+          </div>
+          <div id="ftp-list" class="ftp-list"></div>
+        </section>
+
+        <section class="ftp-view hidden" id="tftp-view">
+          <div class="http-bar">
+            <input id="tftp-host" type="text" placeholder="127.0.0.1" value="127.0.0.1">
+            <input id="tftp-port" type="number" value="69" style="width:90px">
+            <input id="tftp-remote" type="text" placeholder="远端文件名，例如 firmware.bin">
+            <button class="primary" id="tftp-get">下载</button>
+          </div>
+          <div class="http-bar">
+            <label class="ghost-btn">选择文件<input id="tftp-file" type="file" hidden></label>
+            <span id="tftp-file-name" class="muted">未选择文件</span>
+            <input id="tftp-up-remote" type="text" placeholder="上传后的文件名（默认同本地）">
+            <button class="primary" id="tftp-put">上传</button>
+            <span id="tftp-state" class="muted"></span>
+          </div>
+          <div class="muted" style="font-size:12px">
+            TFTP 使用 UDP/69，仅支持单个文件读写；大文件建议用 FTP。上传限制 3MB。
+          </div>
+        </section>
+
+        <section class="ftp-view hidden" id="smb-view">
+          <div class="http-bar">
+            <input id="smb-host" type="text" placeholder="服务器地址" value="127.0.0.1" style="width:150px">
+            <input id="smb-share" type="text" placeholder="共享名，例如 share">
+            <input id="smb-user" type="text" placeholder="用户" style="width:120px">
+            <input id="smb-pass" type="password" placeholder="密码" style="width:120px">
+            <input id="smb-domain" type="text" placeholder="域（可空）" style="width:110px">
+            <button class="primary" id="smb-connect">连接</button>
+          </div>
+          <div class="ftp-status">
+            <span id="smb-state" class="muted">未连接</span>
+            <span id="smb-pwd" class="ftp-path"></span>
+            <span class="spacer"></span>
+            <button class="ghost-btn" id="smb-up">上级</button>
+            <button class="ghost-btn" id="smb-refresh">刷新</button>
+            <button class="ghost-btn" id="smb-mkdir">新建目录</button>
+            <label class="ghost-btn">上传<input id="smb-upload" type="file" hidden></label>
+          </div>
+          <div id="smb-list" class="ftp-list"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="dlg-service" class="dialog wide">
+    <form method="dialog" class="dialog-body" id="form-service">
+      <h2>新建监听服务</h2>
+
+      <div class="proto-grid" id="f-proto-tiles">
+        <button type="button" class="proto-tile" data-proto="raw-tcp">
+          <span class="badge-ico b-tcp">TCP</span><span class="tile-name">原始 TCP</span>
+        </button>
+        <button type="button" class="proto-tile" data-proto="raw-udp">
+          <span class="badge-ico b-udp">UDP</span><span class="tile-name">原始 UDP</span>
+        </button>
+        <button type="button" class="proto-tile" data-proto="telnet">
+          <span class="badge-ico b-tel">TEL</span><span class="tile-name">Telnet</span>
+        </button>
+        <button type="button" class="proto-tile" data-proto="ftp">
+          <span class="badge-ico b-ftp">FTP</span><span class="tile-name">FTP</span>
+        </button>
+        <button type="button" class="proto-tile" data-proto="tftp">
+          <span class="badge-ico b-ftp">TFTP</span><span class="tile-name">TFTP</span>
+        </button>
+        <button type="button" class="proto-tile" data-proto="http">
+          <span class="badge-ico b-http">HTTP</span><span class="tile-name">HTTP</span>
+        </button>
+        <button type="button" class="proto-tile" data-proto="speedtest">
+          <span class="badge-ico b-spd">SPD</span><span class="tile-name">测速</span>
+        </button>
+      </div>
+      <select id="f-proto" class="hidden" tabindex="-1" aria-hidden="true">
+        <option value="raw-tcp">原始 TCP</option>
+        <option value="raw-udp">原始 UDP</option>
+        <option value="telnet">Telnet 服务端</option>
+        <option value="ftp">FTP 服务端</option>
+        <option value="tftp">TFTP 服务端</option>
+        <option value="http">HTTP 服务端</option>
+        <option value="speedtest">LibreSpeed 测速</option>
+      </select>
+
+      <div class="group">
+        <span class="group-title">基础设置</span>
+        <div class="row">
+          <label class="field grow">
+            <span>名称</span>
+            <input id="f-name" type="text" value="TCP 调试服务" maxlength="63">
+          </label>
+          <label class="field w110">
+            <span>端口</span>
+            <input id="f-port" type="number" min="0" max="65535" value="9000">
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="f-echo"> 把收到的数据原样回给对端（HTTP 勾选时返回请求内容）</label>
+      </div>
+
+      <div class="group">
+        <span class="group-title">绑定</span>
+        <div class="row">
+          <label class="field w150">
+            <span>绑定范围</span>
+            <select id="f-kind">
+              <option value="any">全部地址</option>
+              <option value="iface" selected>指定网卡</option>
+              <option value="addr">指定 IP</option>
+            </select>
+          </label>
+          <label class="field grow" id="wrap-iface">
+            <span>网卡</span>
+            <select id="f-iface"></select>
+          </label>
+          <label class="field grow hidden" id="wrap-addr">
+            <span>IP 地址</span>
+            <input id="f-addr" type="text" placeholder="例如 192.168.1.5 或 fe80::1%12">
+          </label>
+          <label class="field w190">
+            <span>地址族</span>
+            <select id="f-family">
+              <option value="v4">仅 IPv4</option>
+              <option value="v6">仅 IPv6</option>
+              <option value="dual" selected>双栈（IPv4 + IPv6）</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="group hidden" id="ftp-options">
+        <span class="group-title">目录与选项</span>
+        <label class="field">
+          <span>静态文件根目录（FTP / TFTP / HTTP，留空使用默认目录）</span>
+          <div style="display:flex;gap:8px">
+            <input id="f-ftp-root" type="text" placeholder="例如 D:\share\www" style="flex:1">
+            <button type="button" class="ghost-btn" id="btn-pick-root">选择目录…</button>
+          </div>
+        </label>
+        <div class="check-row">
+          <label class="check"><input type="checkbox" id="f-ftp-anon" checked> 允许匿名</label>
+          <label class="check"><input type="checkbox" id="f-ftp-ro"> 只读</label>
+        </div>
+      </div>
+
+      <div class="bind-result hidden" id="bind-result"></div>
+
+      <div class="dialog-actions">
+        <button type="button" class="ghost-btn" id="btn-test">测试绑定</button>
+        <span class="spacer"></span>
+        <button type="button" class="ghost-btn" id="btn-cancel">取消</button>
+        <button type="button" class="primary" id="btn-create">创建并启动</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-session" class="dialog wide">
+    <form method="dialog" class="dialog-body">
+      <h2>新建客户端会话</h2>
+
+      <div class="proto-grid" id="s-mode-tiles">
+        <button type="button" class="proto-tile" data-mode="tcp-raw">
+          <span class="badge-ico b-tcp">TCP</span><span class="tile-name">原始 TCP</span>
+        </button>
+        <button type="button" class="proto-tile" data-mode="telnet">
+          <span class="badge-ico b-tel">TEL</span><span class="tile-name">Telnet</span>
+        </button>
+        <button type="button" class="proto-tile" data-mode="udp">
+          <span class="badge-ico b-udp">UDP</span><span class="tile-name">原始 UDP</span>
+        </button>
+        <button type="button" class="proto-tile" data-mode="ssh">
+          <span class="badge-ico b-ssh">SSH</span><span class="tile-name">SSH</span>
+        </button>
+        <button type="button" class="proto-tile" data-mode="serial">
+          <span class="badge-ico b-com">COM</span><span class="tile-name">串口</span>
+        </button>
+      </div>
+      <select id="s-transport" class="hidden" tabindex="-1" aria-hidden="true">
+        <option value="tcp" selected>TCP</option>
+        <option value="udp">UDP</option>
+        <option value="serial">串口</option>
+        <option value="ssh">SSH</option>
+      </select>
+      <select id="s-proto" class="hidden" tabindex="-1" aria-hidden="true">
+        <option value="raw" selected>原始</option>
+        <option value="telnet">Telnet</option>
+      </select>
+
+      <div class="group">
+        <span class="group-title">基础设置</span>
+        <div class="row">
+          <label class="field grow">
+            <span>名称</span>
+            <input id="s-name" type="text" value="调试会话" maxlength="63">
+          </label>
+        </div>
+      </div>
+
+      <div id="net-config">
+        <div class="group">
+          <span class="group-title">目标</span>
+          <div class="row">
+            <label class="field grow">
+              <span>目标地址</span>
+              <input id="s-host" type="text" placeholder="127.0.0.1 或 example.com" autocomplete="off">
+            </label>
+            <label class="field w110">
+              <span>端口</span>
+              <input id="s-port" type="number" min="1" max="65535" value="80">
+            </label>
+            <label class="field w190">
+              <span>地址族</span>
+              <select id="s-family">
+                <option value="dual" selected>自动（按目标地址）</option>
+                <option value="v4">仅 IPv4</option>
+                <option value="v6">仅 IPv6</option>
+              </select>
+            </label>
+          </div>
+          <span id="s-family-hint" class="field-hint"></span>
+        </div>
+
+        <div class="group">
+          <span class="group-title">源地址</span>
+          <div class="row">
+            <label class="field w150">
+              <span>源地址</span>
+              <select id="s-source">
+                <option value="none" selected>自动</option>
+                <option value="iface">指定网卡</option>
+                <option value="addr">指定 IP</option>
+              </select>
+            </label>
+            <label class="field grow hidden" id="s-wrap-iface">
+              <span>源网卡</span>
+              <select id="s-iface"></select>
+            </label>
+            <label class="field grow hidden" id="s-wrap-addr">
+              <span>源 IP</span>
+              <input id="s-addr" type="text" placeholder="例如 192.168.1.5">
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div id="serial-config" class="group hidden">
+        <span class="group-title">串口参数</span>
+        <div class="row">
+          <label class="field grow">
+            <span>串口</span>
+            <select id="s-serial-port"></select>
+          </label>
+          <label class="field w150">
+            <span>波特率</span>
+            <input id="s-baud" type="number" value="115200" min="50">
+          </label>
+          <button type="button" class="ghost-btn" id="s-refresh-ports">刷新</button>
+        </div>
+        <div class="row">
+          <label class="field w110">
+            <span>数据位</span>
+            <select id="s-data-bits">
+              <option>5</option><option>6</option><option>7</option>
+              <option selected>8</option>
+            </select>
+          </label>
+          <label class="field w110">
+            <span>校验</span>
+            <select id="s-parity">
+              <option value="0" selected>无</option>
+              <option value="1">奇</option>
+              <option value="2">偶</option>
+            </select>
+          </label>
+          <label class="field w110">
+            <span>停止位</span>
+            <select id="s-stop-bits">
+              <option value="1" selected>1</option>
+              <option value="2">2</option>
+            </select>
+          </label>
+          <label class="field w150">
+            <span>流控</span>
+            <select id="s-flow">
+              <option value="0" selected>无</option>
+              <option value="1">RTS / CTS</option>
+              <option value="2">XON / XOFF</option>
+            </select>
+          </label>
+          <div class="check-row">
+            <label class="check"><input type="checkbox" id="s-dtr" checked> DTR</label>
+            <label class="check"><input type="checkbox" id="s-rts" checked> RTS</label>
+          </div>
+        </div>
+      </div>
+
+      <div id="ssh-config" class="group hidden">
+        <span class="group-title">认证</span>
+        <div class="row">
+          <label class="field grow">
+            <span>用户名</span>
+            <input id="s-ssh-user" type="text" value="root">
+          </label>
+          <label class="field grow">
+            <span>密码（或私钥口令）</span>
+            <input id="s-ssh-pass" type="password" placeholder="可留空">
+          </label>
+        </div>
+        <div class="row">
+          <label class="field grow">
+            <span>私钥路径（可选，留空用密码）</span>
+            <input id="s-ssh-key" type="text" placeholder="C:\Users\me\.ssh\id_rsa">
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="s-ssh-compat"> 兼容老算法（ssh-rsa / group1-sha1 / aes-cbc）</label>
+      </div>
+
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="ghost-btn" id="s-cancel">取消</button>
+        <button type="button" class="primary" id="s-create">创建会话</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
