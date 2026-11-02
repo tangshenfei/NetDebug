@@ -1,0 +1,1 @@
+ ../libndlib.a "../third_party/libssh2-1.11.1/src/libssh2.a" -lcrypt32 "../third_party/libsmb2-libsmb2-6.3/lib/libsmb2.a" -lws2_32 -lws2_32 -liphlpapi -lbcrypt -lshell32 -lsetupapi -ladvapi32 -luser32 -lgdi32 -ldwmapi -lcomctl32 -lole32 -loleaut32 -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 

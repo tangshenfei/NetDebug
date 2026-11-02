@@ -1,0 +1,23 @@
+CMakeFiles/ndlib.dir/src/core/ring.c.obj: \
+ C:\Users\tsf12\Documents\deepseek-harness\default-workspace\src\core\ring.c \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/src/core/ring.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/16.2.0/include/stddef.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/stddef.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/crtdefs.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/corecrt.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/_mingw.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/_mingw_mac.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/_mingw_secapi.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/vadefs.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/stdlib.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/corecrt_malloc.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/corecrt_wstdlib.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/16.2.0/include/limits.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/16.2.0/include/syslimits.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/limits.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/malloc.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/16.2.0/include/mm_malloc.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/errno.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/string.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/corecrt_memory.h \
+ C:/Users/tsf12/Documents/deepseek-harness/default-workspace/tools/msys64/mingw64/include/corecrt_wstring.h

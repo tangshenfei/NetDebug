@@ -1,4 +1,4 @@
-﻿#include "httpd/server.h"
+#include "httpd/server.h"
 #include "httpd/api.h"
 #include "core/log.h"
 #include "core/thread.h"
@@ -171,7 +171,7 @@ int main(int argc, char **argv)
         nd_log_init(logpath);
     }
     nd_log_set_level(ND_LOG_INFO);
-    ND_LOGI("netdebug 0.1.0, data dir: %s", nd_config_dir());
+    ND_LOGI("netdebug 0.0.1, data dir: %s", nd_config_dir());
 
     if (screenshot) {
         int rc = nd_gui_capture("http://127.0.0.1:7801/#t=demo", nd_config_dir(), screenshot);
@@ -211,7 +211,7 @@ int main(int argc, char **argv)
     }
 #endif
 
-    printf("netdebug 0.1.0\n");
+    printf("netdebug 0.0.1\n");
     printf("模式: 无窗口（仅命令行）\n");
     printf("调试接口: %s\n", url);
     printf("log: %slogs" ND_SEP "netdebug.log\n", nd_config_dir());

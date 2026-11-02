@@ -206,3 +206,9 @@ docs/          需求与设计文档
 
 - [需求整理 v0.3](docs/requirements-v0.3.md)
 - [详细设计 v0.1（M0 基线）](docs/design-v0.1.md)
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)，版权所有 (c) 2026 tangshenfei。
+
+第三方组件各自遵循其原始许可证，见 [THIRD_PARTY.md](THIRD_PARTY.md)：cJSON（MIT）、libssh2（BSD-3-Clause）、libsmb2（LGPL-2.1）、Microsoft WebView2 SDK（Microsoft 软件许可）、LibreSpeed（LGPL-3.0）。
