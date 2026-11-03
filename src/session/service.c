@@ -41,6 +41,8 @@ static int svc_add_conn(nd_service *s, nd_conn *c)
         if (s->n_conns < s->cap_conns) {
             s->conns[s->n_conns++] = c;
             ok = 1;
+            if (atomic_load(&s->peak_conns) < (int)s->n_conns)
+                atomic_store(&s->peak_conns, (int)s->n_conns);
         }
     }
     nd_mutex_unlock(&s->lock);
@@ -237,6 +239,8 @@ nd_service *nd_service_new(const char *name, const char *proto,
     atomic_init(&s->stopping, 0);
     atomic_init(&s->http_active, 0);
     atomic_init(&s->http_requests, 0);
+    atomic_init(&s->started_ms, 0);
+    atomic_init(&s->peak_conns, 0);
     nd_mutex_init(&s->lock);
 
     nd_mutex_lock(&g_lock);
@@ -299,6 +303,8 @@ int nd_service_start(nd_service *s, char *err, size_t errlen)
 
     atomic_store(&s->stopping, 0);
     atomic_store(&s->running, 1);
+    atomic_store(&s->started_ms, nd_monotonic_ms());
+    atomic_store(&s->peak_conns, 0);
     atomic_fetch_add(&s->refs, 1); /* accept 线程持有 */
     if (nd_thread_start(&s->th_accept, accept_thread, s, 256 * 1024) != 0) {
         atomic_fetch_sub(&s->refs, 1);
@@ -323,6 +329,7 @@ void nd_service_stop(nd_service *s)
 
     nd_thread_join(&s->th_accept);
     atomic_store(&s->running, 0);
+    atomic_store(&s->started_ms, 0);
 
     nd_mutex_lock(&s->lock);
     n = s->n_conns;

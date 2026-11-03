@@ -13,6 +13,13 @@ tools/
 # ---------- 发布包 ----------
 dist/
 
+# ---------- 测试报告（每次跑测试都会重新生成，不入库） ----------
+docs/test-report*.md
+docs/test-results*.xml
+docs/ui-test-report.md
+build/test-report.md
+build/test-results.xml
+
 # ---------- 运行时数据 ----------
 .data/
 .data-*/

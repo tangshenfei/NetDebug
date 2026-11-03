@@ -161,10 +161,7 @@ http://<NetDebug 所在 IP>:<端口>/
 ctest --test-dir build --output-on-failure
 ```
 
-当前结果：**44 个用例 / 449 个断言 / 0 失败**，Windows 与 Linux 均通过。
-
-- 报告（Windows）：[test-report.md](docs/test-report.md)
-- 报告（Linux）：[test-report-linux.md](docs/test-report-linux.md)
+当前结果：**44 个用例 / 449 个断言 / 0 失败**，Windows 与 Linux 均通过。报告是生成物（含时间戳），不入库，跑完测试在 `build/` 下自行查看。
 
 ### 界面专项测试
 
@@ -175,7 +172,7 @@ ctest --test-dir build --output-on-failure
 node tests\ui\ui_test.mjs --md docs\ui-test-report.md
 ```
 
-当前结果：**24 个用例 / 121 个断言 / 0 失败**，报告见 [ui-test-report.md](docs/ui-test-report.md)。
+当前结果：**28 个用例 / 170 个断言 / 0 失败**。报告同样是生成物，跑完在上面输出的路径（默认 `docs\ui-test-report.md`）自行查看，不入库。
 
 `tests/ui/qa_doc_*.mjs` 是使用手册的截图生成脚本（跑完后覆盖 `docs/images/guide/`），同理需要应用与 Edge 在运行。
 

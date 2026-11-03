@@ -81,6 +81,12 @@ static cJSON *service_json(nd_service *s)
     else
         cJSON_AddNumberToObject(o, "conns", (double)nd_service_conn_count(s));
     cJSON_AddNumberToObject(o, "requests", (double)atomic_load(&s->http_requests));
+    cJSON_AddNumberToObject(o, "peak", (double)atomic_load(&s->peak_conns));
+    {
+        uint64_t started = atomic_load(&s->started_ms);
+        uint64_t up = (started && nd_service_running(s)) ? (nd_monotonic_ms() - started) : 0;
+        cJSON_AddNumberToObject(o, "uptime_ms", (double)up);
+    }
     cJSON_AddBoolToObject(o, "echo", s->echo);
     if (!strcmp(s->proto, "ftp")) {
         cJSON *op = cJSON_CreateObject();
@@ -1034,7 +1040,7 @@ int nd_api_handle(void *vreq)
     if (!strcmp(req->path, "/api/meta") && is_get) {
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "name", "netdebug");
-        cJSON_AddStringToObject(o, "version", "0.0.1");
+        cJSON_AddStringToObject(o, "version", "0.0.2");
 #ifdef _WIN32
         cJSON_AddStringToObject(o, "os", "windows");
 #else

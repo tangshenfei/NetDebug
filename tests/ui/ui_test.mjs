@@ -194,6 +194,45 @@ beginCase('协议切换联动默认名称');
 }
 endCase();
 
+beginCase('新建服务：默认端口按协议取值并随机偏移');
+{
+  const ranges = {
+    'raw-tcp': [9000, 9099],
+    http: [8080, 8179],
+    ftp: [2121, 2220],
+    tftp: [6969, 7068],
+    telnet: [2323, 2422],
+  };
+  const seen = new Set();
+  for (let i = 0; i < 3; i++) {
+    await p.ev("document.getElementById('btn-new').click()");
+    await sleep(260);
+    const p0 = Number(await p.ev("document.getElementById('f-port').value"));
+    check(p0 >= 9000 && p0 <= 9099, `TCP 默认端口落在 9000–9099（实际 ${p0}）`);
+    seen.add(p0);
+    for (const proto of ['http', 'ftp', 'tftp', 'telnet']) {
+      await p.ev(`document.querySelector('#f-proto-tiles .proto-tile[data-proto=${proto}]').click()`);
+      await sleep(160);
+      const pv = Number(await p.ev("document.getElementById('f-port').value"));
+      const [lo, hi] = ranges[proto];
+      check(pv >= lo && pv <= hi, `${proto} 默认端口落在 ${lo}–${hi}（实际 ${pv}）`);
+    }
+    await p.ev("document.getElementById('btn-cancel').click()");
+    await sleep(220);
+  }
+  check(seen.size > 1, '多次新建得到的端口不完全相同');
+
+  await p.ev("document.getElementById('btn-new').click()");
+  await sleep(260);
+  await setVal(p.ev, 'f-port', '12345');
+  await p.ev("document.querySelector('#f-proto-tiles .proto-tile[data-proto=http]').click()");
+  await sleep(200);
+  eq(await p.ev("document.getElementById('f-port').value"), '12345', '手动填的端口不被协议切换覆盖');
+  await p.ev("document.getElementById('btn-cancel').click()");
+  await sleep(200);
+}
+endCase();
+
 beginCase('绑定方式切换字段显隐');
 await setVal(p.ev, 'f-kind', 'any');
 await sleep(120);
@@ -290,6 +329,121 @@ await p.ev("document.getElementById('btn-create').click()");
 check(await waitFor(p.ev, "document.getElementById('service-list').innerText.includes('UI 测试 TCP 改名')"), '改名后列表更新');
 await sleep(400);
 check((await findSvcCard(p.ev, 'UI 测试 TCP 改名')).includes('运行中'), '编辑后仍在运行');
+endCase();
+
+beginCase('HTTP 服务的活跃统计面板');
+{
+  const found = await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('请求'));
+    if (!c) return false;
+    c.click();
+    return true;
+  })()`);
+  check(found, '存在 HTTP / 测速类服务卡片');
+  await sleep(700);
+  const txt = await p.ev("document.getElementById('conn-list').innerText");
+  check(!txt.includes('暂无连接'), '点开 HTTP 服务不再显示「暂无连接」');
+  check(txt.includes('进行中请求'), '显示进行中请求');
+  check(txt.includes('累计请求'), '显示累计请求');
+  check(txt.includes('不登记为长连接'), '说明统计口径');
+  check(await p.ev("!!document.querySelector('#service-list button[data-act=conns]')"), '「活跃」是可点击按钮');
+  check(/进行中/.test(await p.ev("document.getElementById('conn-count').textContent")), '计数标签显示进行中数量');
+  /* 点卡片会打开服务详情标签，这里收掉，避免影响后续用例 */
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('服务 ·'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(300);
+}
+endCase();
+
+beginCase('服务实时日志：请求、关闭与清空');
+{
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('请求'));
+    c.querySelector('button[data-act=conns]').click();
+  })()`);
+  await sleep(700);
+  check(await p.ev("!document.getElementById('log-view').classList.contains('hidden')"), '日志视图打开');
+  check(
+    (await p.ev("[...document.querySelectorAll('#tabs .tab')].map(t => t.innerText)")).some((t) => t.includes('日志')),
+    '标签标题包含「日志」'
+  );
+  check(await p.ev("document.getElementById('log-list').innerText.includes('暂无记录')"), '初始为空态');
+  const before = await p.ev("document.querySelectorAll('#log-list .log-row').length");
+  await p.ev("fetch('http://127.0.0.1:19102/hello.txt', { mode: 'no-cors' }).catch(() => 0)");
+  await sleep(900);
+  const after = await p.ev("document.querySelectorAll('#log-list .log-row').length");
+  check(after > before, '请求后新增日志行');
+  const rowTxt = await p.ev("document.querySelector('#log-list .log-row').innerText.replace(/\\s+/g,' ').trim()");
+  check(/已关闭|进行中/.test(rowTxt), '行内显示状态');
+  check(rowTxt.includes('127.0.0.1'), '行内显示对端地址');
+  check(/进行中/.test(await p.ev("document.getElementById('log-count').textContent")) || /条/.test(await p.ev("document.getElementById('log-count').textContent")), '计数显示条数');
+  await p.ev("document.getElementById('log-clear').click()");
+  await sleep(300);
+  check(await p.ev("document.querySelectorAll('#log-list .log-row').length === 0"), '清空后没有行');
+  check(await p.ev("document.getElementById('log-list').innerText.includes('暂无记录')"), '清空后回到空态');
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('日志'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(350);
+  check(await p.ev("document.querySelectorAll('#tabs .tab').length === 0"), '关闭日志标签后无残留');
+}
+endCase();
+
+beginCase('服务详情页：指标、槽位与操作');
+{
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('HTTP'));
+    c.click();
+  })()`);
+  await sleep(800);
+  check(await p.ev("!document.getElementById('svc-view').classList.contains('hidden')"), '详情视图打开');
+  eq(await p.ev("document.getElementById('svc-title').textContent"), 'HTTP 文件服务', '标题是服务名');
+
+  const metrics = await p.ev(
+    "[...document.querySelectorAll('#svc-metrics .metric')].map(m => m.innerText.replace(/\\s+/g,' ').trim())"
+  );
+  check(metrics.some((m) => m.includes('峰值并发')), '有峰值并发指标');
+  check(metrics.some((m) => m.includes('运行时长')), '有运行时长指标');
+  check(metrics.some((m) => m.includes('监听槽位')), '有槽位数量指标');
+  check(await p.ev("document.querySelectorAll('#svc-slots .slot-row').length > 0"), '槽位列表非空');
+  check(await p.ev("document.querySelector('#svc-slots .slot-row.ok') !== null"), '槽位显示为正常状态');
+
+  await p.ev("fetch('http://127.0.0.1:19102/hello.txt', { mode: 'no-cors' }).catch(() => 0)");
+  await sleep(1000);
+  const req = await p.ev(
+    "[...document.querySelectorAll('#svc-metrics .metric')].find(m => m.innerText.includes('累计请求')).querySelector('b').textContent"
+  );
+  check(Number(req) > 0, `累计请求随流量增加（当前 ${req}）`);
+  check((await p.ev("document.querySelectorAll('#svc-recent .recent-row').length")) > 0, '最近活动有记录');
+
+  await p.ev("document.getElementById('svc-toggle').click()");
+  await sleep(1300);
+  eq(await p.ev("document.getElementById('svc-badge').textContent"), '已停止', '停止后徽章变为已停止');
+  check((await p.ev("document.getElementById('svc-slots').innerText")).includes('未运行'), '停止后槽位提示未运行');
+
+  await p.ev("document.getElementById('svc-toggle').click()");
+  await sleep(1600);
+  eq(await p.ev("document.getElementById('svc-badge').textContent"), '运行中', '启动后恢复运行中');
+  check(await p.ev("document.querySelectorAll('#svc-slots .slot-row').length > 0"), '启动后槽位恢复');
+
+  await p.ev("document.getElementById('svc-log-open').click()");
+  await sleep(700);
+  check(
+    (await p.ev("[...document.querySelectorAll('#tabs .tab')].map(t => t.innerText)")).some((t) => t.includes('日志')),
+    '详情页能打开该服务的日志标签'
+  );
+  for (const kw of ['日志', '服务 ·']) {
+    await p.ev(`(() => {
+      const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes(${JSON.stringify(kw)}));
+      if (t) t.querySelector('.tab-close').click();
+    })()`);
+    await sleep(350);
+  }
+  check(await p.ev("document.querySelectorAll('#tabs .tab').length === 0"), '关闭后标签无残留');
+}
 endCase();
 
 beginCase('新建会话：表单联动');
