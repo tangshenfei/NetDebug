@@ -175,7 +175,7 @@ ctest --test-dir build --output-on-failure
 node tests\ui\ui_test.mjs --md docs\ui-test-report.md
 ```
 
-当前结果：**27 个用例 / 155 个断言 / 0 失败**，报告见 [ui-test-report.md](docs/ui-test-report.md)。
+当前结果：**28 个用例 / 170 个断言 / 0 失败**，报告见 [ui-test-report.md](docs/ui-test-report.md)。
 
 `tests/ui/qa_doc_*.mjs` 是使用手册的截图生成脚本（跑完后覆盖 `docs/images/guide/`），同理需要应用与 Edge 在运行。
 

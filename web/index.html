@@ -246,6 +246,30 @@
           </div>
           <div class="log-list" id="log-list"></div>
         </section>
+
+        <section id="svc-view" class="svc-view hidden">
+          <div class="svc-bar">
+            <span class="svc-name" id="svc-title">服务</span>
+            <span class="svc-badge" id="svc-badge">已停止</span>
+            <span class="muted" id="svc-meta"></span>
+            <span class="spacer"></span>
+            <button class="ghost-btn" id="svc-log-open">活动日志</button>
+            <button class="ghost-btn" id="svc-toggle">停止</button>
+            <button class="ghost-btn" id="svc-edit">编辑</button>
+            <button class="ghost-btn danger" id="svc-del">删除</button>
+          </div>
+          <div class="svc-body">
+            <div class="svc-metrics" id="svc-metrics"></div>
+            <div class="svc-block">
+              <h3>监听槽位</h3>
+              <div id="svc-slots"></div>
+            </div>
+            <div class="svc-block">
+              <h3>最近活动</h3>
+              <div id="svc-recent"></div>
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   </div>

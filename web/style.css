@@ -193,6 +193,44 @@ body {
 .log-row.open .log-state { color: #58a6ff; }
 .log-row.closed .log-state, .log-dur { color: var(--muted); }
 .log-empty { padding: 20px 12px; font-size: 12px; color: var(--muted); font-family: inherit; }
+
+/* 服务详情 */
+.svc-view { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.svc-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--bg-elev);
+  font-size: 12px;
+}
+.svc-bar .svc-name { font-size: 14px; }
+.svc-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 18px; }
+.svc-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 10px; }
+.metric {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg-elev);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.metric span { font-size: 11px; color: var(--muted); }
+.metric b { font-size: 20px; font-family: var(--mono); color: var(--text); font-weight: 600; }
+.svc-block h3 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 0 0 8px; }
+.slot-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+  padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px;
+  font-family: var(--mono); font-size: 12px;
+}
+.slot-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.slot-row.ok .dot { background: #3fb950; }
+.slot-row.bad .dot { background: #f85149; }
+.slot-row .addr { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-row .why { color: var(--muted); font-size: 11px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-row {
+  display: grid; grid-template-columns: 62px minmax(120px, 200px) 1fr 54px;
+  gap: 10px; align-items: center; padding: 4px 2px;
+  font-family: var(--mono); font-size: 12px;
+}
+.recent-row + .recent-row { border-top: 1px solid rgba(255,255,255,.05); }
+.recent-row .r-time, .recent-row .r-peer { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-row .r-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-row .r-state { text-align: right; font-size: 11px; color: var(--muted); }
+.recent-row.open .r-state { color: #58a6ff; }
 .term-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--bg-elev);

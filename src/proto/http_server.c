@@ -1024,8 +1024,10 @@ static void *http_thread(void *arg)
     memset(&info, 0, sizeof(info));
 
     if (job->svc) {
-        atomic_fetch_add(&job->svc->http_active, 1);
+        int active = atomic_fetch_add(&job->svc->http_active, 1) + 1;
         atomic_fetch_add(&job->svc->http_requests, 1);
+        if (atomic_load(&job->svc->peak_conns) < active)
+            atomic_store(&job->svc->peak_conns, active);
     }
     peer_text(job->fd, peer, sizeof(peer));
     if (job->svc) {

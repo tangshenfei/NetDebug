@@ -38,7 +38,10 @@
     tabs: [],
     activeTab: null,
     tabSeq: 1,
+    recent: {},
   };
+
+  const paintTimers = new Map();
 
   const SERVICE_DEFAULTS = {
     'raw-tcp': 'TCP 调试服务',
@@ -63,6 +66,17 @@
     speedtest: 8081,
   };
   const PORT_SPREAD = 100;
+
+  /* 协议在界面上显示的名字 */
+  const PROTO_NAMES = {
+    'raw-tcp': 'TCP',
+    'raw-udp': 'UDP',
+    telnet: 'Telnet',
+    ftp: 'FTP',
+    tftp: 'TFTP',
+    http: 'HTTP',
+    speedtest: '测速',
+  };
 
   /* 终端顶部展示用的协议名（后端返回的是内部标识） */
   const protoLabels = {
@@ -142,7 +156,7 @@
   }
 
   function renderServices() {
-    const protoNames = { 'raw-tcp': 'TCP', 'raw-udp': 'UDP', telnet: 'Telnet', ftp: 'FTP', tftp: 'TFTP', http: 'HTTP', speedtest: '测速' };
+    const protoNames = PROTO_NAMES;
     const root = $('#service-list');
     if (!state.services.length) {
       root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有监听服务</div>';
@@ -193,6 +207,8 @@
         const s = state.services.find((x) => x.id === state.currentService);
         if (s) renderConns(s.id);
       }
+      const active = tabById(state.activeTab);
+      if (active && (active.kind === 'svc' || active.kind === 'log')) schedulePaint(active);
     } catch (e) {
       $('#status-line').textContent = '后端连接失败';
     }
@@ -489,6 +505,7 @@
     smb: '#smb-view',
     tftp: '#tftp-view',
     log: '#log-view',
+    svc: '#svc-view',
   };
   const TOOL_TITLES = { http: 'HTTP 调试', ftp: 'FTP 文件', smb: 'SMB 文件', tftp: 'TFTP 传输' };
 
@@ -554,6 +571,8 @@
       renderHttpBody();
     } else if (tab.kind === 'log') {
       paintLog(tab);
+    } else if (tab.kind === 'svc') {
+      paintServiceDetail(tab);
     }
     renderTabs();
   }
@@ -562,7 +581,7 @@
   function openTab(spec) {
     const exist = state.tabs.find((t) => {
       if (spec.kind === 'term') return t.kind === 'term' && t.connId === spec.connId;
-      if (spec.kind === 'log') return t.kind === 'log' && t.svcId === spec.svcId;
+      if (spec.kind === 'log' || spec.kind === 'svc') return t.kind === spec.kind && t.svcId === spec.svcId;
       return t.kind === spec.kind;
     });
     if (exist) {
@@ -664,9 +683,14 @@
   /* 把后端事件应用到所有匹配的日志标签页 */
   function applyServiceEvent(m) {
     if (!m || !m.svc) return;
-    const tabs = state.tabs.filter((t) => t.kind === 'log' && t.svcId === m.svc);
+    recordRecent(m);
+    const tabs = state.tabs.filter((t) => (t.kind === 'log' || t.kind === 'svc') && t.svcId === m.svc);
     if (!tabs.length) return;
     for (const tab of tabs) {
+      if (tab.kind === 'svc') {
+        schedulePaint(tab);
+        continue;
+      }
       if (!tab.rows) tab.rows = [];
       const isStart = m.t === 'req_start' || m.t === 'conn_open';
       const key = m.t === 'req_start' || m.t === 'req_end' ? `r${m.seq}` : `c${m.conn}`;
@@ -691,8 +715,128 @@
       } else {
         continue;
       }
-      if (state.activeTab === tab.id) paintLog(tab);
+      schedulePaint(tab);
     }
+  }
+
+  /* 服务详情页的「最近活动」：与是否打开日志标签无关，始终记录最近 20 条 */
+  function recordRecent(m) {
+    if (!state.recent[m.svc]) state.recent[m.svc] = [];
+    const list = state.recent[m.svc];
+    const key = m.t === 'req_start' || m.t === 'req_end' ? `r${m.seq}` : `c${m.conn}`;
+    if (m.t === 'req_start' || m.t === 'conn_open') {
+      list.push({ key, ts: m.ts, peer: m.peer, detail: m.t === 'conn_open' ? m.proto : '', state: 'open' });
+      if (list.length > 20) list.shift();
+    } else {
+      const row = list.find((r) => r.key === key);
+      if (row) {
+        row.state = 'closed';
+        if (m.method) row.detail = `${m.method} ${m.path || ''}`.trim();
+      }
+    }
+  }
+
+  /* 高频事件下合并重绘，避免速度测试把页面刷爆 */
+  function schedulePaint(tab) {
+    if (paintTimers.has(tab.id)) return;
+    paintTimers.set(
+      tab.id,
+      setTimeout(() => {
+        paintTimers.delete(tab.id);
+        if (state.activeTab !== tab.id) return;
+        if (tab.kind === 'log') paintLog(tab);
+        else if (tab.kind === 'svc') paintServiceDetail(tab);
+      }, 200)
+    );
+  }
+
+  /* ---------- 服务详情 ---------- */
+
+  function fmtUptime(ms) {
+    if (!ms) return '—';
+    const total = Math.floor(ms / 1000);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h) return `${h}h ${m}m`;
+    if (m) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function openServiceDetail(svcId) {
+    const svc = state.services.find((s) => s.id === svcId);
+    const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}` });
+    if (state.activeTab === tab.id) paintServiceDetail(tab);
+    return tab;
+  }
+
+  function recentRowsHtml(svcId) {
+    const rows = (state.recent[svcId] || []).slice(-8).reverse();
+    if (!rows.length) return '<div class="conn-note">暂无活动</div>';
+    return rows
+      .map(
+        (r) => `<div class="recent-row ${r.state === 'open' ? 'open' : 'closed'}">
+          <span class="r-time">${fmtClock(r.ts)}</span>
+          <span class="r-peer">${h(r.peer || '-')}</span>
+          <span class="r-detail">${h(r.detail || '')}</span>
+          <span class="r-state">${r.state === 'open' ? '进行中' : '已结束'}</span>
+        </div>`
+      )
+      .join('');
+  }
+
+  function paintServiceDetail(tab) {
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc) {
+      $('#svc-title').textContent = '服务已删除';
+      $('#svc-badge').textContent = '—';
+      $('#svc-badge').className = 'svc-badge';
+      $('#svc-meta').textContent = '';
+      $('#svc-metrics').innerHTML = '';
+      $('#svc-slots').innerHTML = '<div class="conn-note">服务已不存在，可以关掉这个标签</div>';
+      $('#svc-recent').innerHTML = '';
+      return;
+    }
+    const title = `服务 · ${svc.name}`;
+    if (tab.title !== title) {
+      tab.title = title;
+      renderTabs();
+    }
+    $('#svc-title').textContent = svc.name;
+    $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
+    $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
+    $('#svc-meta').textContent = `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}`;
+    $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
+
+    const slots = svc.slots || [];
+    const okSlots = slots.filter((x) => x.ok).length;
+    const httpLike = svc.proto === 'http' || svc.proto === 'speedtest';
+    const metrics = [
+      ['进行中', String(svc.conns || 0)],
+      ['峰值并发', String(svc.peak || 0)],
+      ['累计请求', httpLike || svc.requests ? String(svc.requests || 0) : '—'],
+      ['运行时长', svc.running ? fmtUptime(svc.uptime_ms) : '—'],
+      ['监听槽位', slots.length ? `${okSlots} / ${slots.length}` : '—'],
+    ];
+    $('#svc-metrics').innerHTML = metrics
+      .map(([k, v]) => `<div class="metric"><span>${h(k)}</span><b>${h(v)}</b></div>`)
+      .join('');
+
+    $('#svc-slots').innerHTML = !svc.running
+      ? '<div class="conn-note">未运行，没有监听槽位</div>'
+      : slots.length
+        ? slots
+            .map(
+              (x) => `<div class="slot-row ${x.ok ? 'ok' : 'bad'}">
+                <span class="dot"></span>
+                <span class="addr">${h(x.addr || '')}</span>
+                <span class="why">${x.ok ? '监听中' : h(x.hint || '绑定失败')}</span>
+              </div>`
+            )
+            .join('')
+        : '<div class="conn-note">这个服务没有监听槽位</div>';
+
+    $('#svc-recent').innerHTML = recentRowsHtml(svc.id);
   }
 
   // ---------- 终端 ----------
@@ -1852,6 +1996,7 @@
     const id = Number((btn && btn.dataset.id) || (card && card.dataset.id));
     if (!id) return;
     if (!btn) {
+      openServiceDetail(id);
       showConns(id);
       return;
     }
@@ -1915,6 +2060,49 @@
     const tab = activeTab();
     if (tab && tab.kind === 'log') paintLog(tab);
   });
+
+  /* ---- 服务详情页操作 ---- */
+  $('#svc-toggle').addEventListener('click', async () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc) return;
+    try {
+      await api(`/api/services/${svc.id}/${svc.running ? 'stop' : 'start'}`, { method: 'POST' });
+      await refreshServices();
+      paintServiceDetail(tab);
+    } catch (e) {
+      toast(errText(e));
+    }
+  });
+  $('#svc-edit').addEventListener('click', () => {
+    const tab = activeTab();
+    const svc = tab && tab.kind === 'svc' ? state.services.find((s) => s.id === tab.svcId) : null;
+    if (svc) openServiceDialog(svc);
+  });
+  $('#svc-del').addEventListener('click', async () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc || !confirm(`删除服务「${svc.name}」？`)) return;
+    try {
+      await api(`/api/services/${svc.id}`, { method: 'DELETE' });
+      closeTab(tab.id);
+      await refreshServices();
+    } catch (e) {
+      toast(errText(e));
+    }
+  });
+  $('#svc-log-open').addEventListener('click', () => {
+    const tab = activeTab();
+    if (tab && tab.kind === 'svc') openServiceLog(tab.svcId);
+  });
+
+  /* 运行时长每秒走一格 */
+  setInterval(() => {
+    const tab = activeTab();
+    if (tab && tab.kind === 'svc') paintServiceDetail(tab);
+  }, 1000);
 
   $('#tabs').addEventListener('click', (ev) => {
     const closeBtn = ev.target.closest('.tab-close');

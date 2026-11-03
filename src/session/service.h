@@ -48,6 +48,10 @@ typedef struct nd_service {
     atomic_int    http_active;
     atomic_uint_fast64_t http_requests;
 
+    /* 指标：本次启动时刻（单调时钟，0=未运行）与峰值并发 */
+    atomic_uint_fast64_t started_ms;
+    atomic_int    peak_conns;
+
     char          last_error[256];
     struct nd_service *next;
 } nd_service;
