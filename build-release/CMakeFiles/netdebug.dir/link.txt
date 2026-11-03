@@ -1,3 +1,0 @@
-C:\Users\tsf12\Documents\deepseek-harness\default-workspace\tools\cmake-4.4.4-windows-x86_64\bin\cmake.exe -E rm -f CMakeFiles\netdebug.dir/objects.a
-C:\Users\tsf12\Documents\deepseek-harness\default-workspace\tools\msys64\mingw64\bin\ar.exe qc CMakeFiles\netdebug.dir/objects.a @CMakeFiles\netdebug.dir\objects1.rsp
-C:\Users\tsf12\Documents\deepseek-harness\default-workspace\tools\msys64\mingw64\bin\c++.exe -O3 -DNDEBUG -static -static-libgcc -static-libstdc++ -Wl,--whole-archive CMakeFiles\netdebug.dir/objects.a -Wl,--no-whole-archive -o netdebug.exe -Wl,--out-implib,libnetdebug.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\netdebug.dir\linkLibs.rsp

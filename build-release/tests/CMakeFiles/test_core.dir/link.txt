@@ -1,3 +1,0 @@
-C:\Users\tsf12\Documents\deepseek-harness\default-workspace\tools\cmake-4.4.4-windows-x86_64\bin\cmake.exe -E rm -f CMakeFiles\test_core.dir/objects.a
-C:\Users\tsf12\Documents\deepseek-harness\default-workspace\tools\msys64\mingw64\bin\ar.exe qc CMakeFiles\test_core.dir/objects.a @CMakeFiles\test_core.dir\objects1.rsp
-C:\Users\tsf12\Documents\deepseek-harness\default-workspace\tools\msys64\mingw64\bin\c++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test_core.dir/objects.a -Wl,--no-whole-archive -o test_core.exe -Wl,--out-implib,libtest_core.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test_core.dir\linkLibs.rsp
