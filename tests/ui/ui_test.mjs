@@ -292,6 +292,26 @@ await sleep(400);
 check((await findSvcCard(p.ev, 'UI 测试 TCP 改名')).includes('运行中'), '编辑后仍在运行');
 endCase();
 
+beginCase('HTTP 服务的活跃统计面板');
+{
+  const found = await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('请求'));
+    if (!c) return false;
+    c.click();
+    return true;
+  })()`);
+  check(found, '存在 HTTP / 测速类服务卡片');
+  await sleep(700);
+  const txt = await p.ev("document.getElementById('conn-list').innerText");
+  check(!txt.includes('暂无连接'), '点开 HTTP 服务不再显示「暂无连接」');
+  check(txt.includes('进行中请求'), '显示进行中请求');
+  check(txt.includes('累计请求'), '显示累计请求');
+  check(txt.includes('不登记为长连接'), '说明统计口径');
+  check(await p.ev("!!document.querySelector('#service-list button[data-act=conns]')"), '「活跃」是可点击按钮');
+  check(/进行中/.test(await p.ev("document.getElementById('conn-count').textContent")), '计数标签显示进行中数量');
+}
+endCase();
+
 beginCase('新建会话：表单联动');
 await p.ev("document.getElementById('btn-new-sess').click()");
 await sleep(250);

@@ -150,7 +150,7 @@
           <div class="svc-actions">
             <button class="mini-btn" data-act="${s.running ? 'stop' : 'start'}" data-id="${s.id}">${s.running ? '停止' : '启动'}</button>
             ${(s.proto === 'http' || s.proto === 'speedtest')
-              ? `<span class="mini-btn">活跃 ${s.conns || 0}</span>`
+              ? `<button class="mini-btn" data-act="conns" data-id="${s.id}" title="查看进行中请求">活跃 ${s.conns || 0}</button>`
               : `<button class="mini-btn" data-act="conns" data-id="${s.id}">连接 ${s.conns || 0}</button>`}
             <button class="mini-btn" data-act="edit" data-id="${s.id}">编辑</button>
             <button class="mini-btn danger" data-act="del" data-id="${s.id}">删除</button>
@@ -414,27 +414,55 @@
     renderConns(id);
   }
 
+  function connRows(list) {
+    return list
+      .map(
+        (c) =>
+          `<div class="conn ${state.currentConn === c.id ? 'active' : ''}" data-conn="${c.id}">
+            <span class="dir">${h(c.proto)}</span>
+            <span class="peer">${h(c.peer)}</span>
+            <span class="dir">${fmtBytes(c.rx)}</span>
+          </div>`
+      )
+      .join('');
+  }
+
   async function renderConns(id) {
     const root = $('#conn-list');
+    const svc = state.services.find((x) => x.id === id);
+    const httpLike = !!svc && (svc.proto === 'http' || svc.proto === 'speedtest');
     try {
       const list = await api(`/api/services/${id}/connections`);
-      $('#conn-count').textContent = list.length ? `${list.length} 条` : '';
-      if (!list.length) {
-        root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">暂无连接</div>';
+
+      if (svc && !svc.running) {
+        $('#conn-count').textContent = '';
+        root.innerHTML = '<div class="conn-note">服务已停止</div>';
         return;
       }
-      root.innerHTML = list
-        .map(
-          (c) =>
-            `<div class="conn ${state.currentConn === c.id ? 'active' : ''}" data-conn="${c.id}">
-              <span class="dir">${h(c.proto)}</span>
-              <span class="peer">${h(c.peer)}</span>
-              <span class="dir">${fmtBytes(c.rx)}</span>
-            </div>`
-        )
-        .join('');
+
+      /* HTTP / LibreSpeed 的请求毫秒级完成，不登记在长连接表里，
+         卡片上的「活跃 N」统计的是在途请求数，这里要按同一口径展示。 */
+      if (httpLike) {
+        const active = (svc && svc.conns) || 0;
+        const total = (svc && svc.requests) || 0;
+        $('#conn-count').textContent = `${active} 进行中`;
+        root.innerHTML =
+          `<div class="conn-stat">
+             <div class="conn-stat-row"><span>进行中请求</span><b>${active}</b></div>
+             <div class="conn-stat-row"><span>累计请求</span><b>${total}</b></div>
+             <div class="conn-note">HTTP / LibreSpeed 的请求处理极快，不登记为长连接，因此这里按请求数统计。</div>
+           </div>` + connRows(list);
+        return;
+      }
+
+      $('#conn-count').textContent = list.length ? `${list.length} 条` : '';
+      if (!list.length) {
+        root.innerHTML = '<div class="conn-note">暂无连接</div>';
+        return;
+      }
+      root.innerHTML = connRows(list);
     } catch (e) {
-      root.innerHTML = '<div class="muted" style="padding:6px 10px">读取失败</div>';
+      root.innerHTML = '<div class="conn-note">读取失败</div>';
     }
   }
 

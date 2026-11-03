@@ -125,6 +125,16 @@ body {
 .conn .peer { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn .dir { color: var(--muted); font-size: 11px; }
 
+/* 当前连接面板：空状态 / HTTP 请求统计 */
+.conn-note { padding: 6px 10px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.conn-stat { padding: 4px 10px 0; }
+.conn-stat-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 12px; color: var(--muted); padding: 3px 0;
+}
+.conn-stat-row b { font-family: var(--mono); font-size: 15px; color: var(--text); font-weight: 600; }
+.conn-stat .conn-note { padding: 6px 0 4px; font-size: 11px; opacity: .85; }
+
 .sidebar-foot { padding: 10px 14px; border-top: 1px solid var(--line); font-size: 11px; }
 .warn {
   color: var(--yellow); background: #2a230f; border: 1px solid #4a3d17;
