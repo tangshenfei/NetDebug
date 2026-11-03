@@ -1040,7 +1040,7 @@ int nd_api_handle(void *vreq)
     if (!strcmp(req->path, "/api/meta") && is_get) {
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "name", "netdebug");
-        cJSON_AddStringToObject(o, "version", "0.0.1");
+        cJSON_AddStringToObject(o, "version", "0.0.2");
 #ifdef _WIN32
         cJSON_AddStringToObject(o, "os", "windows");
 #else

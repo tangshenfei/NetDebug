@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(netdebug VERSION 0.0.1 LANGUAGES C CXX)
+project(netdebug VERSION 0.0.2 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
