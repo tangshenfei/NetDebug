@@ -194,6 +194,45 @@ beginCase('协议切换联动默认名称');
 }
 endCase();
 
+beginCase('新建服务：默认端口按协议取值并随机偏移');
+{
+  const ranges = {
+    'raw-tcp': [9000, 9099],
+    http: [8080, 8179],
+    ftp: [2121, 2220],
+    tftp: [6969, 7068],
+    telnet: [2323, 2422],
+  };
+  const seen = new Set();
+  for (let i = 0; i < 3; i++) {
+    await p.ev("document.getElementById('btn-new').click()");
+    await sleep(260);
+    const p0 = Number(await p.ev("document.getElementById('f-port').value"));
+    check(p0 >= 9000 && p0 <= 9099, `TCP 默认端口落在 9000–9099（实际 ${p0}）`);
+    seen.add(p0);
+    for (const proto of ['http', 'ftp', 'tftp', 'telnet']) {
+      await p.ev(`document.querySelector('#f-proto-tiles .proto-tile[data-proto=${proto}]').click()`);
+      await sleep(160);
+      const pv = Number(await p.ev("document.getElementById('f-port').value"));
+      const [lo, hi] = ranges[proto];
+      check(pv >= lo && pv <= hi, `${proto} 默认端口落在 ${lo}–${hi}（实际 ${pv}）`);
+    }
+    await p.ev("document.getElementById('btn-cancel').click()");
+    await sleep(220);
+  }
+  check(seen.size > 1, '多次新建得到的端口不完全相同');
+
+  await p.ev("document.getElementById('btn-new').click()");
+  await sleep(260);
+  await setVal(p.ev, 'f-port', '12345');
+  await p.ev("document.querySelector('#f-proto-tiles .proto-tile[data-proto=http]').click()");
+  await sleep(200);
+  eq(await p.ev("document.getElementById('f-port').value"), '12345', '手动填的端口不被协议切换覆盖');
+  await p.ev("document.getElementById('btn-cancel').click()");
+  await sleep(200);
+}
+endCase();
+
 beginCase('绑定方式切换字段显隐');
 await setVal(p.ev, 'f-kind', 'any');
 await sleep(120);

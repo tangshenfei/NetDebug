@@ -50,6 +50,20 @@
     speedtest: 'LibreSpeed 测速',
   };
 
+  /* 各协议的默认端口：取「常用端口 +1000」这类非特权端口，
+     避免 Linux 上绑定 <1024 需要 root，同时保留辨识度。
+     新建时在基准上随机偏移，连续新建多个不会都撞在同一个端口。 */
+  const SERVICE_PORTS = {
+    'raw-tcp': 9000,
+    'raw-udp': 9100,
+    telnet: 2323,
+    ftp: 2121,
+    tftp: 6969,
+    http: 8080,
+    speedtest: 8081,
+  };
+  const PORT_SPREAD = 100;
+
   /* 终端顶部展示用的协议名（后端返回的是内部标识） */
   const protoLabels = {
     'raw-tcp': 'TCP',
@@ -1501,6 +1515,17 @@
     }
   }
 
+  /* 在协议基准端口附近随机取一个没被占用的端口 */
+  function suggestPort(proto) {
+    const base = SERVICE_PORTS[proto] || 9000;
+    const used = new Set(state.services.map((s) => s.bind && s.bind.port));
+    for (let i = 0; i < 200; i++) {
+      const p = base + Math.floor(Math.random() * PORT_SPREAD);
+      if (p > 1024 && p < 65536 && !used.has(p)) return p;
+    }
+    return base;
+  }
+
   function openServiceDialog(s) {
     state.editService = s ? s.id : null;
     $('#dlg-service').querySelector('h2').textContent = s ? '编辑监听服务' : '新建监听服务';
@@ -1508,7 +1533,8 @@
     const proto = s ? s.proto : 'raw-tcp';
     $('#f-proto').value = proto;
     $('#f-name').value = s ? s.name : (SERVICE_DEFAULTS[proto] || '调试服务');
-    $('#f-port').value = s ? s.bind.port : 9000;
+    $('#f-port').value = s ? s.bind.port : suggestPort(proto);
+    state.portTouched = false;
     $('#f-kind').value = s ? s.bind.kind : 'iface';
     $('#f-family').value = s ? s.bind.family : 'dual';
     $('#f-addr').value = s && s.bind.kind === 'addr' ? (s.bind.addr || '') : '';
@@ -1640,12 +1666,16 @@
     }
   });
   $('#f-kind').addEventListener('change', updateFormVisibility);
+  $('#f-port').addEventListener('input', () => {
+    state.portTouched = true;
+  });
   $('#f-proto').addEventListener('change', () => {
     syncServiceTiles();
     const proto = $('#f-proto').value;
     const name = $('#f-name');
     if (!name.value || Object.values(SERVICE_DEFAULTS).includes(name.value))
       name.value = SERVICE_DEFAULTS[proto] || '调试服务';
+    if (!state.portTouched) $('#f-port').value = suggestPort(proto);
     $('#ftp-options').classList.toggle('hidden',
       ['ftp', 'tftp', 'http'].indexOf(proto) < 0);
   });
@@ -1777,6 +1807,10 @@
   $('#s-transport').addEventListener('change', () => {
     if ($('#s-transport').value === 'ssh' && $('#s-port').value === '80')
       $('#s-port').value = '22';
+  });
+  $('#s-proto').addEventListener('change', () => {
+    if ($('#s-proto').value === 'telnet' && $('#s-port').value === '80')
+      $('#s-port').value = '23';
   });
   $('#s-refresh-ports').addEventListener('click', fillSerialPorts);
 
