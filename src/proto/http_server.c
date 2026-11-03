@@ -4,12 +4,15 @@
 #include "core/thread.h"
 #include "core/util.h"
 #include "httpd/web_assets.h"
+#include "httpd/ws.h"
 #include "net/addr.h"
 #include "platform/netio.h"
+#include "platform/platform.h"
 #include "session/service.h"
 
 #include <ctype.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +31,49 @@ typedef struct {
     nd_service     *svc;
     nd_http_srv_cfg cfg;
 } http_job;
+
+/* ---------- 请求日志事件 ---------- */
+
+typedef struct {
+    char method[16];
+    char target[256];
+} http_req_info;
+
+static atomic_uint_fast64_t g_req_seq;
+
+static void json_escape(char *dst, size_t cap, const char *src)
+{
+    size_t o = 0;
+    if (!cap)
+        return;
+    for (; src && *src; src++) {
+        unsigned char ch = (unsigned char)*src;
+        if (o + 8 >= cap)
+            break;
+        if (ch == '"' || ch == '\\') {
+            dst[o++] = '\\';
+            dst[o++] = (char)ch;
+        } else if (ch < 0x20) {
+            o += (size_t)snprintf(dst + o, cap - o, "\\u%04x", ch);
+        } else {
+            dst[o++] = (char)ch;
+        }
+    }
+    dst[o] = '\0';
+}
+
+static void peer_text(int fd, char *buf, size_t cap)
+{
+    struct sockaddr_storage ss;
+    socklen_t slen = sizeof(ss);
+    nd_addr a;
+
+    snprintf(buf, cap, "-");
+    if (getpeername(fd, (struct sockaddr *)&ss, &slen) == 0 &&
+        nd_addr_from_sockaddr(&a, (struct sockaddr *)&ss, (int)slen) == 0)
+        nd_addr_format(&a, 1, buf, cap);
+}
+
 
 static int ieq(const char *a, const char *b)
 {
@@ -895,7 +941,8 @@ static void handle_speedtest(int fd, uint64_t service_id, const char *method,
     }
 }
 
-static void handle_request(int fd, uint64_t service_id, const nd_http_srv_cfg *cfg)
+static void handle_request(int fd, uint64_t service_id, const nd_http_srv_cfg *cfg,
+                           http_req_info *info)
 {
     char raw[65536];
     char method[16], target[2048], version[16];
@@ -911,6 +958,10 @@ static void handle_request(int fd, uint64_t service_id, const nd_http_srv_cfg *c
     if (sscanf(raw, "%15s %2047s %15s", method, target, version) != 3) {
         send_error(fd, 400, "Bad Request", "bad request line", 0);
         return;
+    }
+    if (info) {
+        nd_strlcpy(info->method, method, sizeof(info->method));
+        nd_strlcpy(info->target, target, sizeof(info->target));
     }
     head_only = !strcmp(method, "HEAD");
     if (strcmp(method, "GET") && strcmp(method, "HEAD") &&
@@ -963,15 +1014,42 @@ static void handle_request(int fd, uint64_t service_id, const nd_http_srv_cfg *c
 static void *http_thread(void *arg)
 {
     http_job *job = (http_job *)arg;
+    char peer[96];
+    char ev[640];
+    char target_esc[300];
+    http_req_info info;
+    uint64_t seq = 0;
+    uint64_t t0 = nd_monotonic_ms();
+
+    memset(&info, 0, sizeof(info));
 
     if (job->svc) {
         atomic_fetch_add(&job->svc->http_active, 1);
         atomic_fetch_add(&job->svc->http_requests, 1);
     }
-    nd_net_set_nodelay(job->fd);
-    handle_request(job->fd, job->service_id, &job->cfg);
-    nd_net_close(job->fd);
+    peer_text(job->fd, peer, sizeof(peer));
     if (job->svc) {
+        seq = (uint64_t)atomic_fetch_add(&g_req_seq, 1) + 1;
+        snprintf(ev, sizeof(ev),
+                 "{\"t\":\"req_start\",\"svc\":%llu,\"seq\":%llu,\"peer\":\"%s\",\"ts\":%llu}",
+                 (unsigned long long)job->service_id, (unsigned long long)seq, peer,
+                 (unsigned long long)nd_wall_ms());
+        nd_ws_event_json(ev);
+    }
+
+    nd_net_set_nodelay(job->fd);
+    handle_request(job->fd, job->service_id, &job->cfg, &info);
+    nd_net_close(job->fd);
+
+    if (job->svc) {
+        json_escape(target_esc, sizeof(target_esc), info.target);
+        snprintf(ev, sizeof(ev),
+                 "{\"t\":\"req_end\",\"svc\":%llu,\"seq\":%llu,\"peer\":\"%s\",\"method\":\"%s\","
+                 "\"path\":\"%s\",\"dur_ms\":%llu,\"ts\":%llu}",
+                 (unsigned long long)job->service_id, (unsigned long long)seq, peer, info.method,
+                 target_esc, (unsigned long long)(nd_monotonic_ms() - t0),
+                 (unsigned long long)nd_wall_ms());
+        nd_ws_event_json(ev);
         atomic_fetch_sub(&job->svc->http_active, 1);
         nd_service_put(job->svc);
     }

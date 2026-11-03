@@ -312,6 +312,41 @@ beginCase('HTTP 服务的活跃统计面板');
 }
 endCase();
 
+beginCase('服务实时日志：请求、关闭与清空');
+{
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('请求'));
+    c.querySelector('button[data-act=conns]').click();
+  })()`);
+  await sleep(700);
+  check(await p.ev("!document.getElementById('log-view').classList.contains('hidden')"), '日志视图打开');
+  check(
+    (await p.ev("[...document.querySelectorAll('#tabs .tab')].map(t => t.innerText)")).some((t) => t.includes('日志')),
+    '标签标题包含「日志」'
+  );
+  check(await p.ev("document.getElementById('log-list').innerText.includes('暂无记录')"), '初始为空态');
+  const before = await p.ev("document.querySelectorAll('#log-list .log-row').length");
+  await p.ev("fetch('http://127.0.0.1:19102/hello.txt', { mode: 'no-cors' }).catch(() => 0)");
+  await sleep(900);
+  const after = await p.ev("document.querySelectorAll('#log-list .log-row').length");
+  check(after > before, '请求后新增日志行');
+  const rowTxt = await p.ev("document.querySelector('#log-list .log-row').innerText.replace(/\\s+/g,' ').trim()");
+  check(/已关闭|进行中/.test(rowTxt), '行内显示状态');
+  check(rowTxt.includes('127.0.0.1'), '行内显示对端地址');
+  check(/进行中/.test(await p.ev("document.getElementById('log-count').textContent")) || /条/.test(await p.ev("document.getElementById('log-count').textContent")), '计数显示条数');
+  await p.ev("document.getElementById('log-clear').click()");
+  await sleep(300);
+  check(await p.ev("document.querySelectorAll('#log-list .log-row').length === 0"), '清空后没有行');
+  check(await p.ev("document.getElementById('log-list').innerText.includes('暂无记录')"), '清空后回到空态');
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('日志'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(350);
+  check(await p.ev("document.querySelectorAll('#tabs .tab').length === 0"), '关闭日志标签后无残留');
+}
+endCase();
+
 beginCase('新建会话：表单联动');
 await p.ev("document.getElementById('btn-new-sess').click()");
 await sleep(250);

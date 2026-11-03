@@ -474,6 +474,7 @@
     ftp: '#ftp-view',
     smb: '#smb-view',
     tftp: '#tftp-view',
+    log: '#log-view',
   };
   const TOOL_TITLES = { http: 'HTTP 调试', ftp: 'FTP 文件', smb: 'SMB 文件', tftp: 'TFTP 传输' };
 
@@ -537,14 +538,19 @@
       renderSmb();
     } else if (tab.kind === 'http') {
       renderHttpBody();
+    } else if (tab.kind === 'log') {
+      paintLog(tab);
     }
     renderTabs();
   }
 
-  /* 打开一个视图：同类已存在就直接切过去（终端按连接区分） */
+  /* 打开一个视图：同类已存在就直接切过去（终端按连接、日志按服务区分） */
   function openTab(spec) {
-    const exist = state.tabs.find((t) =>
-      spec.kind === 'term' ? t.kind === 'term' && t.connId === spec.connId : t.kind === spec.kind);
+    const exist = state.tabs.find((t) => {
+      if (spec.kind === 'term') return t.kind === 'term' && t.connId === spec.connId;
+      if (spec.kind === 'log') return t.kind === 'log' && t.svcId === spec.svcId;
+      return t.kind === spec.kind;
+    });
     if (exist) {
       activateTab(exist.id);
       return exist;
@@ -560,6 +566,7 @@
       tab.local = '';
       tab.ws = null;
     }
+    if (tab.kind === 'log') tab.rows = [];
     state.tabs.push(tab);
     activateTab(tab.id);
     return tab;
@@ -588,6 +595,90 @@
     const hits = state.tabs.filter((t) => t.kind === 'term' && t.connId === connId);
     hits.forEach((t) => closeTab(t.id));
     return hits.length > 0;
+  }
+
+  /* 打开某个服务的实时日志（对端 / 请求 / 关闭） */
+  function openServiceLog(svcId) {
+    const svc = state.services.find((s) => s.id === svcId);
+    const tab = openTab({
+      kind: 'log',
+      svcId,
+      title: `${svc ? svc.name : '服务'} · 日志`,
+    });
+    if (!tab.rows) tab.rows = [];
+    if (state.activeTab === tab.id) paintLog(tab);
+    return tab;
+  }
+
+  function fmtClock(ms) {
+    const d = new Date(ms || Date.now());
+    const p = (x) => String(x).padStart(2, '0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  function fmtDur(ms) {
+    if (ms == null) return '';
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    return `${(ms / 1000).toFixed(2)}s`;
+  }
+
+  function logRowHtml(r) {
+    const open = r.state === 'open';
+    return `<div class="log-row ${open ? 'open' : 'closed'}">
+      <span class="log-time">${fmtClock(r.ts)}</span>
+      <span class="log-peer">${h(r.peer || '-')}</span>
+      <span class="log-detail">${h(r.detail || '')}</span>
+      <span class="log-state">${open ? '进行中' : '已关闭'}</span>
+      <span class="log-dur">${fmtDur(r.dur)}</span>
+    </div>`;
+  }
+
+  function paintLog(tab) {
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    $('#log-title').textContent = `${svc ? svc.name : '服务'} · 日志`;
+    const open = tab.rows.filter((r) => r.state === 'open').length;
+    $('#log-count').textContent = tab.rows.length
+      ? `${tab.rows.length} 条${open ? ` · ${open} 进行中` : ''}`
+      : '';
+    const list = $('#log-list');
+    list.innerHTML = tab.rows.length
+      ? tab.rows.map(logRowHtml).join('')
+      : '<div class="log-empty">暂无记录。该服务收到请求或建立连接后会实时出现在这里。</div>';
+    if ($('#log-follow').checked) list.scrollTop = list.scrollHeight;
+  }
+
+  /* 把后端事件应用到所有匹配的日志标签页 */
+  function applyServiceEvent(m) {
+    if (!m || !m.svc) return;
+    const tabs = state.tabs.filter((t) => t.kind === 'log' && t.svcId === m.svc);
+    if (!tabs.length) return;
+    for (const tab of tabs) {
+      if (!tab.rows) tab.rows = [];
+      const isStart = m.t === 'req_start' || m.t === 'conn_open';
+      const key = m.t === 'req_start' || m.t === 'req_end' ? `r${m.seq}` : `c${m.conn}`;
+      if (isStart) {
+        tab.rows.push({
+          key,
+          ts: m.ts,
+          peer: m.peer,
+          detail: m.t === 'conn_open' ? m.proto : '',
+          state: 'open',
+          dur: null,
+        });
+        if (tab.rows.length > 500) tab.rows.shift();
+      } else if (m.t === 'req_end' || m.t === 'conn_close') {
+        const row = tab.rows.find((r) => r.key === key);
+        if (row) {
+          row.state = 'closed';
+          if (m.dur_ms != null) row.dur = m.dur_ms;
+          if (m.method) row.detail = `${m.method} ${m.path || ''}`.trim();
+          if (m.t === 'conn_close') row.dur = m.ts && row.ts ? m.ts - row.ts : null;
+        }
+      } else {
+        continue;
+      }
+      if (state.activeTab === tab.id) paintLog(tab);
+    }
   }
 
   // ---------- 终端 ----------
@@ -1329,7 +1420,13 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws/events?t=${encodeURIComponent(token)}`);
     state.events = ws;
-    ws.onmessage = () => {
+    ws.onmessage = (e) => {
+      if (typeof e.data === 'string') {
+        try {
+          const m = JSON.parse(e.data);
+          if (m && m.t) applyServiceEvent(m);
+        } catch (err) {}
+      }
       clearTimeout(state.eventsTimer);
       state.eventsTimer = setTimeout(refreshServices, 300);
     };
@@ -1733,6 +1830,7 @@
         await api(`/api/services/${id}`, { method: 'DELETE' });
         if (state.currentService === id) state.currentService = null;
       } else if (act === 'conns') {
+        openServiceLog(id);
         showConns(id);
         return;
       } else if (act === 'edit') {
@@ -1771,6 +1869,17 @@
   $('#opt-ts').addEventListener('change', (e) => {
     state.term.ts = e.target.checked;
     repaintTerminal();
+  });
+
+  $('#log-clear').addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'log') return;
+    tab.rows = [];
+    paintLog(tab);
+  });
+  $('#log-follow').addEventListener('change', () => {
+    const tab = activeTab();
+    if (tab && tab.kind === 'log') paintLog(tab);
   });
 
   $('#tabs').addEventListener('click', (ev) => {

@@ -206,6 +206,16 @@ nd_conn *nd_conn_new(int fd, const nd_addr *peer, const nd_addr *local,
     g_conns = c;
     nd_mutex_unlock(&g_reg_lock);
 
+    if (c->service_id) {
+        char ev[256], peer_buf[96];
+        nd_addr_format(&c->peer, 1, peer_buf, sizeof(peer_buf));
+        snprintf(ev, sizeof(ev),
+                 "{\"t\":\"conn_open\",\"svc\":%llu,\"conn\":%llu,\"proto\":\"%s\",\"peer\":\"%s\",\"ts\":%llu}",
+                 (unsigned long long)c->service_id, (unsigned long long)c->id, c->proto, peer_buf,
+                 (unsigned long long)nd_wall_ms());
+        nd_ws_event_json(ev);
+    }
+
     conn_log_open(c);
     return c;
 }
@@ -331,6 +341,15 @@ void nd_conn_put(nd_conn *c)
     if (!c)
         return;
     if (atomic_fetch_sub(&c->refs, 1) == 1) {
+        if (c->service_id) {
+            char ev[256], peer[96];
+            nd_addr_format(&c->peer, 1, peer, sizeof(peer));
+            snprintf(ev, sizeof(ev),
+                     "{\"t\":\"conn_close\",\"svc\":%llu,\"conn\":%llu,\"proto\":\"%s\",\"peer\":\"%s\",\"ts\":%llu}",
+                     (unsigned long long)c->service_id, (unsigned long long)c->id, c->proto, peer,
+                     (unsigned long long)nd_wall_ms());
+            nd_ws_event_json(ev);
+        }
         nd_mutex_destroy(&c->send_lock);
         nd_mutex_destroy(&c->log_lock);
         free(c);
