@@ -39,6 +39,7 @@
     activeTab: null,
     tabSeq: 1,
     recent: {},
+    presets: [],
   };
 
   const paintTimers = new Map();
@@ -915,6 +916,55 @@
     out.scrollTop = out.scrollHeight;
   }
 
+  /* ---------- 快捷发送与全局预置 ---------- */
+
+  const QUICK_EOL = { crlf: '\r\n', lf: '\n', cr: '\r', none: '' };
+
+  function sendBytes(bytes) {
+    const tab = activeTermTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+      toast('尚未连接');
+      return false;
+    }
+    tab.ws.send(bytes);
+    tab.tx += bytes.length;
+    if (state.activeTab === tab.id) $('#term-tx').textContent = 'TX ' + fmtBytes(tab.tx);
+    return true;
+  }
+
+  function quickSend(text) {
+    const value = text != null ? text : $('#quick-input').value;
+    if (!value) return;
+    const eol = QUICK_EOL[$('#quick-eol').value] || '';
+    if (sendBytes(new TextEncoder().encode(value + eol)) && text == null) $('#quick-input').value = '';
+  }
+
+  function renderQuickPresets() {
+    const box = $('#quick-presets');
+    if (!state.presets.length) {
+      box.innerHTML = '<span class="quick-empty">还没有预置命令：输入框里写一条，点「存为预置」</span>';
+      return;
+    }
+    box.innerHTML = state.presets
+      .map((c, i) => `<button class="quick-preset" data-idx="${i}" title="左键发送，右键删除">${h(c)}</button>`)
+      .join('');
+  }
+
+  async function refreshPresets() {
+    try {
+      state.presets = await api('/api/presets');
+    } catch (e) {
+      state.presets = [];
+    }
+    renderQuickPresets();
+  }
+
+  async function savePresets(list) {
+    await api('/api/presets', { method: 'PUT', body: JSON.stringify({ presets: list }) });
+    state.presets = list;
+    renderQuickPresets();
+  }
+
   /* ---------- xterm 终端仿真 ---------- */
 
   const termInst = new Map(); /* tab.id -> { term, fit, slot } */
@@ -984,6 +1034,8 @@
     $('#term-xterm').classList.toggle('hidden', !termMode);
     $('#term-out').classList.toggle('hidden', termMode);
     $('#term-send').classList.toggle('hidden', termMode);
+    $('#term-quick').classList.toggle('hidden', !termMode);
+    $('#quick-presets').classList.toggle('hidden', !termMode);
     $('#term-mode-btn').textContent = tab.view === 'term' ? '日志视图' : '终端视图';
 
     termInst.forEach((inst, id) => {
@@ -2177,6 +2229,54 @@
     paintTerminal(tab);
     applyTermView(tab);
   });
+
+  /* 快捷发送栏 */
+  $('#quick-send').addEventListener('click', () => quickSend());
+  $('#quick-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      quickSend();
+    }
+  });
+  $('#quick-save').addEventListener('click', async () => {
+    const value = $('#quick-input').value.trim();
+    if (!value) {
+      toast('输入框是空的');
+      return;
+    }
+    if (state.presets.includes(value)) {
+      toast('这条已经是预置了');
+      return;
+    }
+    if (state.presets.length >= 24) {
+      toast('预置最多 24 条');
+      return;
+    }
+    try {
+      await savePresets(state.presets.concat([value]));
+      toast('已存为预置');
+    } catch (e) {
+      toast(errText(e));
+    }
+  });
+  $('#quick-presets').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.quick-preset');
+    if (!btn) return;
+    quickSend(state.presets[Number(btn.dataset.idx)]);
+  });
+  $('#quick-presets').addEventListener('contextmenu', async (ev) => {
+    const btn = ev.target.closest('.quick-preset');
+    if (!btn) return;
+    ev.preventDefault();
+    const idx = Number(btn.dataset.idx);
+    const cmd = state.presets[idx];
+    if (!confirm(`删除预置「${cmd}」？`)) return;
+    try {
+      await savePresets(state.presets.filter((_, i) => i !== idx));
+    } catch (e) {
+      toast(errText(e));
+    }
+  });
   window.addEventListener('resize', () => {
     const tab = activeTermTab();
     if (!tab || tab.view !== 'term') return;
@@ -2278,6 +2378,7 @@
       updateFormVisibility();
       await refreshServices();
       await refreshSessions();
+      await refreshPresets();
       $('#status-line').textContent = '就绪';
       connectEvents();
       setInterval(() => {

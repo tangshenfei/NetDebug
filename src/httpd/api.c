@@ -1079,6 +1079,45 @@ int nd_api_handle(void *vreq)
         return 1;
     }
 
+    if (!strcmp(req->path, "/api/presets")) {
+        if (is_get) {
+            char list[ND_MAX_PRESETS][ND_PRESET_LEN];
+            size_t n = nd_presets_list(list, ND_MAX_PRESETS);
+            cJSON *arr = cJSON_CreateArray();
+            for (size_t i = 0; i < n; i++)
+                cJSON_AddItemToArray(arr, cJSON_CreateString(list[i]));
+            nd_http_json(req->fd, 200, arr);
+            cJSON_Delete(arr);
+            return 1;
+        }
+        if (is_put || is_post) {
+            cJSON *body = cJSON_Parse(req->body ? req->body : "");
+            cJSON *arr = body ? cJSON_GetObjectItemCaseSensitive(body, "presets") : NULL;
+            const char *items[ND_MAX_PRESETS];
+            size_t n = 0;
+            int rc;
+            if (arr && cJSON_IsArray(arr)) {
+                const cJSON *it;
+                cJSON_ArrayForEach(it, arr) {
+                    if (n >= ND_MAX_PRESETS)
+                        break;
+                    if (cJSON_IsString(it) && it->valuestring[0])
+                        items[n++] = it->valuestring;
+                }
+            }
+            rc = nd_presets_save(items, n);
+            cJSON_Delete(body);
+            {
+                cJSON *o = cJSON_CreateObject();
+                cJSON_AddBoolToObject(o, "ok", rc == 0);
+                cJSON_AddNumberToObject(o, "count", (double)n);
+                nd_http_json(req->fd, rc == 0 ? 200 : 500, o);
+                cJSON_Delete(o);
+            }
+            return 1;
+        }
+    }
+
     if (!strncmp(req->path, "/api/ftp", 8) &&
         (req->path[8] == '\0' || req->path[8] == '/')) {
         if (ftp_handle(req))

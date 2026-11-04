@@ -534,6 +534,39 @@ await sleep(200);
 check(!(await p.ev("document.getElementById('opt-hex').checked")), 'HEX 开关可关闭');
 endCase();
 
+beginCase('快捷发送与全局预置');
+{
+  check(await p.ev("!document.getElementById('term-quick').classList.contains('hidden')"), '终端模式显示快捷发送栏');
+  const cmd = `UI-TEST-${Date.now()}`;
+  await p.ev(`(() => {
+    const e = document.getElementById('quick-input');
+    e.value = ${JSON.stringify(cmd)};
+    e.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await p.ev("document.getElementById('quick-save').click()");
+  await sleep(800);
+  check(
+    (await p.ev("[...document.querySelectorAll('.quick-preset')].map(b => b.textContent)")).includes(cmd),
+    '存为预置后按钮出现在列表里'
+  );
+  check(((await api('/api/presets')) || []).includes(cmd), '预置已写入后端（重启后仍在）');
+
+  const txBefore = await p.ev("document.getElementById('term-tx').textContent");
+  await p.ev(`(() => {
+    const b = [...document.querySelectorAll('.quick-preset')].find((x) => x.textContent === ${JSON.stringify(cmd)});
+    if (b) b.click();
+  })()`);
+  await sleep(600);
+  check((await p.ev("document.getElementById('term-tx').textContent")) !== txBefore, '点预置按钮后 TX 字节增加');
+
+  /* 清理：把测试命令从后端删掉，避免污染真实配置 */
+  const list = (await api('/api/presets')) || [];
+  await api('/api/presets', { method: 'PUT', body: JSON.stringify({ presets: list.filter((x) => !x.startsWith('UI-TEST-')) }) });
+}
+endCase();
+
+beginCase('多标签：工具与终端并存、可切换可关闭');
+
 beginCase('多标签：工具与终端并存、可切换可关闭');
 {
   const base = await p.ev("document.querySelectorAll('#tabs .tab').length");

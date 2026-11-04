@@ -112,6 +112,18 @@
             <pre class="term-out hidden" id="term-out"></pre>
             <div class="term-xterm hidden" id="term-xterm"></div>
           </div>
+          <div class="term-quick hidden" id="term-quick">
+            <input id="quick-input" type="text" placeholder="待发送的命令，回车发送…" autocomplete="off" spellcheck="false">
+            <select id="quick-eol" title="行尾">
+              <option value="crlf" selected>CRLF</option>
+              <option value="lf">LF</option>
+              <option value="cr">CR</option>
+              <option value="none">无行尾</option>
+            </select>
+            <button class="primary" id="quick-send">发送</button>
+            <button class="ghost-btn" id="quick-save">存为预置</button>
+          </div>
+          <div class="quick-presets hidden" id="quick-presets"></div>
           <div class="term-send" id="term-send">
             <select id="send-enc" title="发送编码">
               <option value="utf8">文本</option>

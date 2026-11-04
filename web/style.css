@@ -263,6 +263,31 @@ body {
 .line.rx .body { color: var(--rx); }
 .line.sys .body { color: var(--muted); font-style: italic; }
 
+/* 快捷发送栏与全局预置按钮 */
+.term-quick {
+  display: flex; gap: 8px; padding: 8px 12px;
+  border-top: 1px solid var(--line); background: var(--bg-elev);
+}
+.term-quick input {
+  flex: 1; background: #0c0f14; border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 7px 10px; font-family: var(--mono); outline: none;
+}
+.term-quick input:focus { border-color: var(--accent); }
+.term-quick select { flex: 0 0 auto; }
+.quick-presets {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px;
+  background: var(--bg-elev);
+}
+.quick-presets:empty { display: none; }
+.quick-preset {
+  border: 1px solid var(--line); background: var(--bg-elev2); color: var(--text);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  font-family: var(--mono); font-size: 12px; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quick-preset:hover { border-color: var(--accent); color: var(--accent); }
+.quick-empty { font-size: 11px; color: var(--muted); padding: 2px 0 4px; }
+
 .term-send {
   display: flex; gap: 8px; padding: 10px 14px;
   border-top: 1px solid var(--line); background: var(--bg-elev);

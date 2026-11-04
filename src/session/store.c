@@ -195,3 +195,60 @@ void nd_store_load_services(void)
     cJSON_Delete(arr);
     ND_LOGI("services restored from %s", path);
 }
+
+size_t nd_presets_list(char out[][ND_PRESET_LEN], size_t cap)
+{
+    char path[600];
+    void *data = NULL;
+    size_t len = 0, n = 0;
+    cJSON *arr;
+    const cJSON *item;
+
+    store_path(path, sizeof(path), "presets.json");
+    if (nd_read_file(path, &data, &len) != 0)
+        return 0;
+    arr = cJSON_Parse((const char *)data);
+    free(data);
+    if (!arr)
+        return 0;
+    if (cJSON_IsArray(arr)) {
+        cJSON_ArrayForEach(item, arr) {
+            if (n >= cap)
+                break;
+            if (cJSON_IsString(item) && item->valuestring[0]) {
+                nd_strlcpy(out[n], item->valuestring, ND_PRESET_LEN);
+                n++;
+            }
+        }
+    }
+    cJSON_Delete(arr);
+    return n;
+}
+
+int nd_presets_save(const char *const *items, size_t n)
+{
+    char path[600], tmp[620];
+    char *text;
+    cJSON *arr = cJSON_CreateArray();
+
+    if (!arr)
+        return -1;
+    for (size_t i = 0; i < n; i++)
+        cJSON_AddItemToArray(arr, cJSON_CreateString(items[i]));
+    text = cJSON_Print(arr);
+    cJSON_Delete(arr);
+    if (!text)
+        return -1;
+
+    store_path(path, sizeof(path), "presets.json");
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (nd_write_file(tmp, text, strlen(text)) == 0) {
+        remove(path);
+        rename(tmp, path);
+        free(text);
+        return 0;
+    }
+    ND_LOGW("cannot write %s", path);
+    free(text);
+    return -1;
+}
