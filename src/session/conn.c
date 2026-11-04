@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
 static nd_mutex g_reg_lock;
 static int g_reg_ready = 0;
 static nd_conn *g_conns = NULL;
@@ -30,6 +29,10 @@ static void conn_registry_init(void)
 static void conn_log_open(nd_conn *c)
 {
     char dir[512], path[600];
+    /* 逐字节 hex 落盘开销很大（约为流量的 4~5 倍），默认关闭；
+     * 需要排查时用 NETDEBUG_CONN_LOG=1 打开 */
+    if (!getenv("NETDEBUG_CONN_LOG"))
+        return;
     snprintf(dir, sizeof(dir), "%slogs", nd_config_dir());
     nd_mkdir_p(dir);
     snprintf(path, sizeof(path), "%s/conn-%llu.log", dir, (unsigned long long)c->id);
@@ -143,6 +146,11 @@ static void *conn_rx_thread(void *arg)
     nd_conn *c = (nd_conn *)arg;
     unsigned char buf[65536];
     unsigned char clean[65536];
+    /* 攒批：串口一字节一次读、网卡小包都会让每读一次就发一个 WS 帧，
+     * 帧太碎时浏览器侧每秒要处理上千个消息。攒到 4KB 或空闲时再发。 */
+    unsigned char *batch = NULL;
+    size_t blen = 0;
+    uint64_t last_data_ms = 0, last_flush_ms = 0;
 
     /* SSH 认证完成前不要读：那时还没有 channel */
     while (!atomic_load(&c->rx_ready) && !atomic_load(&c->closing))
@@ -150,27 +158,62 @@ static void *conn_rx_thread(void *arg)
 
     while (!atomic_load(&c->closing)) {
         int n;
+        /* 攒着数据时用短超时轮询，保证最后一批尽快发出去；空闲时睡久一点 */
+        int rto = blen ? 10 : 0;
         if (c->ssh)
             n = nd_ssh_read((nd_ssh *)c->ssh, buf, sizeof(buf));
         else if (c->serial)
-            n = nd_serial_read(c->serial, buf, sizeof(buf), 500);
+            n = nd_serial_read(c->serial, buf, sizeof(buf), rto ? rto : 500);
         else
-            n = nd_net_recv_some(c->fd, buf, sizeof(buf), 1000);
+            n = nd_net_recv_some(c->fd, buf, sizeof(buf), rto ? rto : 1000);
         if (n > 0) {
+            uint64_t now = nd_monotonic_ms();
             if (c->telnet) {
                 size_t outn = nd_telnet_feed((nd_telnet *)c->telnet, c, buf, (size_t)n,
                                              clean, sizeof(clean));
                 if (outn)
                     nd_conn_note_rx(c, clean, outn, NULL);
-            } else {
-                nd_conn_note_rx(c, buf, (size_t)n, NULL);
+                continue;
+            }
+            if (!batch) {
+                batch = (unsigned char *)malloc(65536);
+                if (!batch) {
+                    nd_conn_note_rx(c, buf, (size_t)n, NULL);
+                    continue;
+                }
+            }
+            if (blen + (size_t)n > 65536) {
+                nd_conn_note_rx(c, batch, blen, NULL);
+                blen = 0;
+                last_flush_ms = now;
+            }
+            memcpy(batch + blen, buf, (size_t)n);
+            blen += (size_t)n;
+
+            /* 连续来了（间隔 < 20ms）就继续攒；否则立刻发，保证交互延迟 */
+            if (blen >= 4096 || !last_data_ms || now - last_data_ms >= 20 ||
+                now - last_flush_ms >= 10) {
+                nd_conn_note_rx(c, batch, blen, NULL);
+                blen = 0;
+                last_flush_ms = now;
+            }
+            last_data_ms = now;
+            continue;
+        }
+        if (n == -2) {
+            if (blen) {
+                nd_conn_note_rx(c, batch, blen, NULL);
+                blen = 0;
+                last_flush_ms = nd_monotonic_ms();
             }
             continue;
         }
-        if (n == -2)
-            continue;
         break;
     }
+
+    if (blen)
+        nd_conn_note_rx(c, batch, blen, NULL);
+    free(batch);
 
     conn_teardown(c);
     nd_conn_put(c); /* 线程自持引用 */

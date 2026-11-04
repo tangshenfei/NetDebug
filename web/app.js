@@ -1072,12 +1072,19 @@
 
   function termPush(tab, line) {
     tab.lines.push(line);
-    while (tab.lines.length > 3000) tab.lines.shift();
+    /* 成批裁剪，避免每来一块数据就 shift() 搬 3000 个元素 */
+    if (tab.lines.length > 4000) tab.lines.splice(0, tab.lines.length - 3000);
     if (state.activeTab !== tab.id) return;
+    /* 终端视图下日志 DOM 是不可见的：不要为每一块数据建节点，
+     * 切回日志视图时 paintTerminal 会按 tab.lines 重建 */
+    if (tab.view === 'term') return;
     const out = $('#term-out');
     const nearBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 40;
     out.appendChild(termLineNode(line));
-    while (out.childElementCount > 3000) out.removeChild(out.firstChild);
+    if (out.childElementCount > 3200) {
+      const drop = out.childElementCount - 3000;
+      for (let i = 0; i < drop; i++) out.removeChild(out.firstChild);
+    }
     if (nearBottom) out.scrollTop = out.scrollHeight;
   }
 

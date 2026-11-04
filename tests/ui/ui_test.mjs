@@ -518,8 +518,13 @@ eq(await p.ev("document.getElementById('term-proto').textContent"), 'TCP', '终�
 check((await p.ev("document.getElementById('term-peer').textContent")).includes('19201'), '终端显示对端地址');
 await setVal(p.ev, 'send-input', 'ping-1');
 await p.ev("document.getElementById('send-btn').click()");
+/* 终端视图下日志 DOM 不逐条生成，切到日志视图再看收发记录 */
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(400);
 check(await waitFor(p.ev, "document.getElementById('term-out').textContent.includes('RX ping-1')"), '收到服务端回显');
 check((await p.ev("document.getElementById('term-out').textContent")).includes('TX ping-1'), '本地发送已记录');
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(300);
 endCase();
 
 beginCase('终端视图切换与清空');
@@ -685,7 +690,11 @@ opened = await waitFor(p.ev, "document.getElementById('term-state').textContent 
 check(opened, 'UDP 会话已连接');
 await setVal(p.ev, 'send-input', 'udp-ping');
 await p.ev("document.getElementById('send-btn').click()");
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(400);
 check(await waitFor(p.ev, "document.getElementById('term-out').textContent.includes('RX udp-ping')"), 'UDP 数据回显');
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(300);
 endCase();
 
 beginCase('HTTP 调试工具');
