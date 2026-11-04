@@ -465,6 +465,12 @@ input::placeholder { color: #59636f; }
 .ftp-row .dir-icon { margin-right: 6px; }
 .ftp-row .actions { display: flex; gap: 6px; justify-content: flex-end; }
 .ftp-row .size { font-family: var(--mono); color: var(--muted); text-align: right; }
+.form-error {
+  color: #f87171; font-size: 12px; line-height: 1.4;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
+.form-error:empty { display: none; }
+
 .dialog-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 .bind-result {

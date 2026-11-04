@@ -384,14 +384,22 @@
     syncModeTiles();
   }
 
+  /* 对话框内的校验错误显示在按钮行左侧，不弹角落 toast */
+  function formError(text) {
+    const el = $('#s-error');
+    if (el) el.textContent = text || '';
+  }
+
   async function createSession() {
     const transport = $('#s-transport').value;
     let body;
+    formError('');
 
     if (transport === 'ssh') {
       const host = $('#s-host').value.trim();
       if (!host) {
-        toast('主机不能为空');
+        formError('主机不能为空');
+        $('#s-host').focus();
         return;
       }
       body = {
@@ -409,8 +417,8 @@
     } else if (transport === 'serial') {
       const port = $('#s-serial-port').value;
       if (!port) {
-        toast('没有可用串口：先插上设备并装好驱动，再点「刷新」');
-        $('#s-serial-port').scrollIntoView({ block: 'center' });
+        formError('没有可用串口：先插上设备并装好驱动，再点「刷新」');
+        $('#s-serial-hint').scrollIntoView({ block: 'center' });
         return;
       }
       body = {
@@ -429,7 +437,8 @@
     } else {
       const host = $('#s-host').value.trim();
       if (!host) {
-        toast('目标地址不能为空');
+        formError('目标地址不能为空');
+        $('#s-host').focus();
         return;
       }
       body = {
@@ -2107,6 +2116,7 @@
     fillSerialPorts();
     updateSessionSource();
     syncProtoTransport();
+    formError('');
     $('#s-host').value = '';
     $('#s-family').disabled = false;
     $('#s-family').value = 'dual';
