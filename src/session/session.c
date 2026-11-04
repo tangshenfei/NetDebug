@@ -109,6 +109,64 @@ static int pick_source(nd_session *s, const nd_addr *target, nd_addr *src,
     return 0; /* 不绑定源地址 */
 }
 
+/* ---------- SSH：握手/认证/开 shell 放到后台线程，终端先开出来 ---------- */
+
+typedef struct {
+    nd_session *sess;
+    nd_conn    *conn;
+    nd_ssh     *ssh;
+} ssh_setup_job;
+
+static void ssh_prompt_out(void *ctx, const char *text, size_t len)
+{
+    nd_conn *c = (nd_conn *)ctx;
+    if (c && text && len)
+        nd_conn_emit(c, 0, text, len);
+}
+
+static void *ssh_setup_thread(void *arg)
+{
+    ssh_setup_job *j = (ssh_setup_job *)arg;
+    nd_session *s = j->sess;
+    nd_conn *c = j->conn;
+    char err[512] = "";
+    int interactive;
+    int ok = 0;
+
+    interactive = (s->ssh_pass[0] == '\0' && s->ssh_key[0] == '\0');
+
+    if (nd_ssh_handshake(j->ssh, s->ssh_compat, err, sizeof(err)) == 0 &&
+        nd_ssh_auth(j->ssh, s->ssh_user, s->ssh_pass, s->ssh_key, interactive,
+                    err, sizeof(err)) == 0 &&
+        nd_ssh_shell(j->ssh, s->ssh_cols > 0 ? s->ssh_cols : 120,
+                     s->ssh_rows > 0 ? s->ssh_rows : 32, err, sizeof(err)) == 0)
+        ok = 1;
+
+    if (ok) {
+        nd_mutex_lock(&s->lock);
+        nd_strlcpy(s->ssh_fp, nd_ssh_fingerprint(j->ssh), sizeof(s->ssh_fp));
+        s->last_error[0] = '\0';
+        nd_mutex_unlock(&s->lock);
+        atomic_store(&s->state, ND_SESS_OPEN);
+        nd_conn_set_rx_ready(c, 1);
+    } else {
+        char line[700];
+        snprintf(line, sizeof(line), "\r\n连接失败：%s\r\n", err[0] ? err : "未知错误");
+        nd_conn_emit(c, 0, line, strlen(line));
+        nd_mutex_lock(&s->lock);
+        nd_strlcpy(s->last_error, err[0] ? err : "SSH 连接失败", sizeof(s->last_error));
+        nd_mutex_unlock(&s->lock);
+        atomic_store(&s->state, ND_SESS_ERROR);
+        nd_conn_close(c);
+    }
+
+    nd_ssh_put(j->ssh);
+    nd_session_put(s);
+    nd_conn_put(c);
+    free(j);
+    return NULL;
+}
+
 int nd_session_connect(nd_session *s, uint64_t *conn_id, char *err, size_t errlen)
 {
     nd_addr addrs[16];
@@ -136,32 +194,25 @@ int nd_session_connect(nd_session *s, uint64_t *conn_id, char *err, size_t errle
     atomic_store(&s->state, ND_SESS_CONNECTING);
 
     if (s->ssh) {
-        int fd = -1;
+        int sfd = -1;
         char serr[512] = "";
         nd_ssh *sh;
         nd_conn *sc;
         nd_addr local, peer;
+        ssh_setup_job *job;
+        nd_thread th;
 
-        sh = nd_ssh_connect(s->host, s->port, s->family, s->ssh_user, s->ssh_pass,
-                            s->ssh_key, s->ssh_compat, 8000, &fd, serr, sizeof(serr));
+        sh = nd_ssh_open(s->host, s->port, s->family, 8000, &sfd, serr, sizeof(serr));
         if (!sh) {
             snprintf(err, errlen, "%s", serr);
             last_err = ND_E_PROTO_AUTH;
             goto fail;
         }
-        if (nd_ssh_shell(sh, s->ssh_cols > 0 ? s->ssh_cols : 120,
-                         s->ssh_rows > 0 ? s->ssh_rows : 32,
-                         serr, sizeof(serr)) != 0) {
-            nd_ssh_close(sh);
-            snprintf(err, errlen, "%s", serr);
-            last_err = ND_E_PROTO;
-            goto fail;
-        }
         memset(&local, 0, sizeof(local));
-        nd_net_getsockname(fd, &local);
+        nd_net_getsockname(sfd, &local);
         memset(&peer, 0, sizeof(peer));
-        nd_net_getpeername(fd, &peer);
-        sc = nd_conn_new(fd, peer.family ? &peer : NULL, &local, 0, "ssh", 0);
+        nd_net_getpeername(sfd, &peer);
+        sc = nd_conn_new(sfd, peer.family ? &peer : NULL, &local, 0, "ssh", 0);
         if (!sc) {
             nd_ssh_close(sh);
             snprintf(err, errlen, "创建 SSH 连接失败");
@@ -169,23 +220,46 @@ int nd_session_connect(nd_session *s, uint64_t *conn_id, char *err, size_t errle
             goto fail;
         }
         sc->ssh = sh;
-        sc->owns_fd = 0; /* nd_ssh_close 负责关闭 socket */
-        nd_strlcpy(s->ssh_fp, nd_ssh_fingerprint(sh), sizeof(s->ssh_fp));
+        sc->owns_fd = 0;              /* nd_ssh_close 负责关闭 socket */
+        nd_conn_set_rx_ready(sc, 0);  /* 认证完成前接收线程等着 */
+        nd_ssh_set_output(sh, ssh_prompt_out, sc);
         if (nd_conn_start(sc) != 0) {
             nd_conn_close(sc);
             snprintf(err, errlen, "启动 SSH 接收线程失败");
             last_err = ND_E_IO_THREAD;
             goto fail;
         }
+
+        job = (ssh_setup_job *)calloc(1, sizeof(*job));
+        if (!job) {
+            nd_conn_close(sc);
+            snprintf(err, errlen, "内存不足");
+            last_err = ND_E_INTERNAL;
+            goto fail;
+        }
+        job->sess = nd_session_get(s->id);
+        job->conn = nd_conn_get(sc->id);
+        job->ssh = nd_ssh_get(sh);
+        if (nd_thread_start(&th, ssh_setup_thread, job, 256 * 1024) != 0) {
+            nd_ssh_put(job->ssh);
+            nd_session_put(job->sess);
+            nd_conn_put(job->conn);
+            free(job);
+            nd_conn_close(sc);
+            snprintf(err, errlen, "启动 SSH 认证线程失败");
+            last_err = ND_E_INTERNAL;
+            goto fail;
+        }
+        nd_thread_detach(&th);
+
         nd_mutex_lock(&s->lock);
         s->conn_id = sc->id;
         nd_mutex_unlock(&s->lock);
-        atomic_store(&s->state, ND_SESS_OPEN);
         atomic_store(&s->busy, 0);
         *conn_id = sc->id;
-        ND_LOGI("session %llu ssh to %s:%u as %s", (unsigned long long)s->id,
-                s->host, (unsigned)s->port, s->ssh_user);
-        return ND_OK;
+        ND_LOGI("session %llu ssh to %s:%u as %s (认证在后台进行)",
+                (unsigned long long)s->id, s->host, (unsigned)s->port, s->ssh_user);
+        return ND_OK; /* 状态保持 CONNECTING，由后台线程置 OPEN/CLOSED */
     }
 
     if (s->serial) {

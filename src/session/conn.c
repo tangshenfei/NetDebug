@@ -144,6 +144,10 @@ static void *conn_rx_thread(void *arg)
     unsigned char buf[65536];
     unsigned char clean[65536];
 
+    /* SSH 认证完成前不要读：那时还没有 channel */
+    while (!atomic_load(&c->rx_ready) && !atomic_load(&c->closing))
+        nd_sleep_ms(20);
+
     while (!atomic_load(&c->closing)) {
         int n;
         if (c->ssh)
@@ -197,6 +201,7 @@ nd_conn *nd_conn_new(int fd, const nd_addr *peer, const nd_addr *local,
     atomic_init(&c->refs, 1);
     atomic_init(&c->closing, 0);
     atomic_init(&c->closed, 0);
+    atomic_init(&c->rx_ready, 1);
     nd_mutex_init(&c->send_lock);
     nd_mutex_init(&c->log_lock);
 
@@ -229,6 +234,26 @@ int nd_conn_start(nd_conn *c)
     }
     c->started = 1;
     return 0;
+}
+
+void nd_conn_set_rx_ready(nd_conn *c, int on)
+{
+    if (c)
+        atomic_store(&c->rx_ready, on ? 1 : 0);
+}
+
+void nd_conn_emit(nd_conn *c, int dir, const void *data, size_t n)
+{
+    if (!c || !data || !n || atomic_load(&c->closing))
+        return;
+    if (dir) {
+        c->tx_bytes += (uint64_t)n;
+    } else {
+        c->rx_bytes += (uint64_t)n;
+        c->last_rx_ms = nd_monotonic_ms();
+    }
+    nd_ws_broadcast_data(c->id, dir, data, (size_t)n);
+    conn_log_write(c, dir, (const unsigned char *)data, (size_t)n);
 }
 
 int nd_conn_send(nd_conn *c, const void *data, size_t len)
