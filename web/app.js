@@ -2139,6 +2139,8 @@
     const m = b.dataset.mode;
     const t = $('#s-transport');
     const pr = $('#s-proto');
+    /* 换会话类型时上一次的校验错误已经不适用了 */
+    formError('');
     if (m === 'ssh') t.value = 'ssh';
     else if (m === 'serial') t.value = 'serial';
     else {
