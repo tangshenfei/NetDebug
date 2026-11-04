@@ -6,6 +6,7 @@
   <title>NetDebug · 网络调试工作台</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%232563EB'/><text x='32' y='45' font-size='40' text-anchor='middle' fill='white' font-family='Segoe UI' font-weight='bold'>N</text></svg>">
   <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
 </head>
 <body>
   <div class="app">
@@ -101,13 +102,17 @@
               <span id="term-state" class="state">closed</span>
               <span id="term-rx" class="muted">RX 0 B</span>
               <span id="term-tx" class="muted">TX 0 B</span>
+              <button class="ghost-btn" id="term-mode-btn" title="在终端仿真与日志视图之间切换">日志视图</button>
               <button class="ghost-btn" id="btn-clear">清空</button>
               <label class="check"><input type="checkbox" id="opt-hex"> HEX</label>
               <label class="check"><input type="checkbox" id="opt-ts" checked> 时间戳</label>
             </div>
           </div>
-          <pre class="term-out" id="term-out"></pre>
-          <div class="term-send">
+          <div class="term-body">
+            <pre class="term-out hidden" id="term-out"></pre>
+            <div class="term-xterm hidden" id="term-xterm"></div>
+          </div>
+          <div class="term-send" id="term-send">
             <select id="send-enc" title="发送编码">
               <option value="utf8">文本</option>
               <option value="hex">HEX</option>
@@ -553,6 +558,8 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/addon-fit.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

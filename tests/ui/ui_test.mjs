@@ -566,22 +566,28 @@ beginCase('多标签：工具与终端并存、可切换可关闭');
 }
 endCase();
 
-beginCase('会话断开：按钮与终端收尾');
+beginCase('会话断开：保留终端与历史输出');
 {
   const txt = await p.ev(`(() => {
     const c = [...document.querySelectorAll('#session-list .sess')].find(x => x.innerText.includes('UI 测试会话'));
     return c ? c.innerText.replace(/\\n/g, ' / ') : '';
   })()`);
   check(txt.includes('断开'), `已连接会话显示断开按钮：${txt}`);
+  check(txt.includes('切到终端'), '终端已打开时按钮显示「切到终端」');
 }
+const linesBefore = await p.ev("document.querySelectorAll('#term-out .line').length");
 await p.ev(`(() => {
   const c = [...document.querySelectorAll('#session-list .sess')].find(x => x.innerText.includes('UI 测试会话'));
   c.querySelector('button[data-sact=disconnect]').click();
 })()`);
 await sleep(1300);
-check(await p.ev("document.getElementById('terminal').classList.contains('hidden')"), '断开后终端关闭');
-check(await p.ev("!document.getElementById('welcome').classList.contains('hidden')"), '回到欢迎页');
-eq((await p.ev("document.getElementById('tabs').innerHTML")).trim(), '', '标签页已清空');
+check(await p.ev("!document.getElementById('terminal').classList.contains('hidden')"), '断开后终端不关闭');
+check((await p.ev("document.querySelectorAll('#tabs .tab').length")) === 1, '断开后标签页保留');
+check(
+  (await p.ev("document.querySelectorAll('#term-out .line').length")) >= linesBefore,
+  `历史输出保留（断开前 ${linesBefore} 行）`
+);
+check(await p.ev("document.getElementById('term-state').textContent === 'closed'"), '终端状态变为 closed');
 check(
   await p.ev(`(() => {
     const c = [...document.querySelectorAll('#session-list .sess')].find(x => x.innerText.includes('UI 测试会话'));

@@ -220,6 +220,12 @@
     return { idle: '未连接', connecting: '连接中', open: '已连接', error: '失败' }[st] || st;
   }
 
+  /* 某个连接对应的终端标签（没有则返回 undefined） */
+  function termTabForConn(connId) {
+    if (!connId) return undefined;
+    return state.tabs.find((t) => t.kind === 'term' && t.connId === connId);
+  }
+
   function renderSessions() {
     const root = $('#session-list');
     if (!state.sessions.length) {
@@ -241,7 +247,9 @@
                 : `${s.protocol === 'telnet' ? 'telnet' : (s.transport || 'tcp')} · ${s.host}:${s.port} · ${s.family}`
           )}</div>
           <div class="svc-actions">
-            <button class="mini-btn" data-sact="open" data-id="${s.id}">${s.state === 'open' ? '打开终端' : '连接'}</button>
+            <button class="mini-btn" data-sact="open" data-id="${s.id}">${h(
+              termTabForConn(s.conn_id) ? '切到终端' : s.state === 'open' ? '打开终端' : '连接'
+            )}</button>
             ${s.state === 'open' ? `<button class="mini-btn" data-sact="disconnect" data-id="${s.id}">断开</button>` : ''}
             <button class="mini-btn danger" data-sact="del" data-id="${s.id}">删除</button>
           </div>
@@ -261,12 +269,12 @@
     const s = state.sessions.find((x) => x.id === id);
     if (!s) return;
     if (s.state === 'open' && s.conn_id) {
-      connectTerminal(s.conn_id);
+      connectTerminal(s.conn_id, id);
       return;
     }
     try {
       const r = await api(`/api/sessions/${id}/connect`, { method: 'POST' });
-      connectTerminal(r.conn_id);
+      connectTerminal(r.conn_id, id);
       await refreshSessions();
     } catch (e) {
       toast(errText(e));
@@ -295,9 +303,11 @@
     try {
       const ports = await api('/api/serial/ports');
       if (!ports.length) {
-        sel.innerHTML = '<option value="">未发现串口（检查驱动或权限）</option>';
+        sel.innerHTML = '<option value="">未检测到串口</option>';
+        sel.disabled = true;
         return;
       }
+      sel.disabled = false;
       sel.innerHTML = ports
         .map((p) => `<option value="${h(p.port)}">${h(p.port)} — ${h(p.desc)}</option>`)
         .join('');
@@ -524,6 +534,8 @@
 
   function renderTabs() {
     const root = $('#tabs');
+    /* 会话卡片的按钮文字取决于「终端是否已打开」，标签变化时一并刷新 */
+    if (typeof renderSessions === 'function' && state.sessions.length) renderSessions();
     if (!state.tabs.length) {
       root.innerHTML = '';
       return;
@@ -561,6 +573,7 @@
     if (tab.kind === 'term') {
       paintTerminal(tab);
       ensureTermSocket(tab);
+      applyTermView(tab);
       const out = $('#term-out');
       out.scrollTop = out.scrollHeight;
     } else if (tab.kind === 'ftp') {
@@ -598,6 +611,7 @@
       tab.peer = '';
       tab.local = '';
       tab.ws = null;
+      tab.view = 'term'; /* term = xterm 终端仿真，log = 日志视图 */
     }
     if (tab.kind === 'log') tab.rows = [];
     state.tabs.push(tab);
@@ -613,6 +627,7 @@
       try { tab.ws.close(); } catch (e) {}
       tab.ws = null;
     }
+    if (tab.kind === 'term') disposeXterm(tab);
     state.tabs.splice(idx, 1);
     if (state.activeTab === id) {
       const next = state.tabs[idx] || state.tabs[idx - 1];
@@ -880,10 +895,99 @@
     $('#term-state').className = 'state ' + (tab.state === 'open' ? 'open' : 'closed');
     $('#term-rx').textContent = 'RX ' + fmtBytes(tab.rx);
     $('#term-tx').textContent = 'TX ' + fmtBytes(tab.tx);
+    $('#term-mode-btn').textContent = tab.view === 'term' ? '日志视图' : '终端视图';
     const out = $('#term-out');
     out.innerHTML = '';
     tab.lines.forEach((l) => out.appendChild(termLineNode(l)));
     out.scrollTop = out.scrollHeight;
+  }
+
+  /* ---------- xterm 终端仿真 ---------- */
+
+  const termInst = new Map(); /* tab.id -> { term, fit, slot } */
+
+  function xtermAvailable() {
+    return typeof Terminal !== 'undefined' && typeof FitAddon !== 'undefined';
+  }
+
+  function ensureXterm(tab) {
+    let inst = termInst.get(tab.id);
+    if (inst || !xtermAvailable()) return inst || null;
+    const host = $('#term-xterm');
+    const slot = document.createElement('div');
+    slot.className = 'xterm-slot';
+    slot.dataset.tab = String(tab.id);
+    host.appendChild(slot);
+
+    const term = new Terminal({
+      convertEol: true,
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
+      scrollback: 5000,
+      theme: {
+        background: '#0d1117',
+        foreground: '#c9d1d9',
+        cursor: '#58a6ff',
+        selectionBackground: '#264f78',
+      },
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(slot);
+    inst = { term, fit, slot };
+    termInst.set(tab.id, inst);
+    fit.fit();
+
+    /* 键盘输入直接发到连接 */
+    term.onData((data) => {
+      const t = tabById(tab.id);
+      if (!t || !t.ws || t.ws.readyState !== WebSocket.OPEN) return;
+      const bytes = new TextEncoder().encode(data);
+      t.ws.send(bytes);
+      t.tx += bytes.length;
+      if (state.activeTab === t.id) $('#term-tx').textContent = 'TX ' + fmtBytes(t.tx);
+    });
+
+    /* 回放已有输出 */
+    for (const l of tab.lines) {
+      if (l.sys) term.write(`\x1b[90m· ${l.sys}\x1b[0m\r\n`);
+      else if (l.b) term.write(l.b);
+    }
+    return inst;
+  }
+
+  function disposeXterm(tab) {
+    const inst = termInst.get(tab.id);
+    if (!inst) return;
+    try { inst.term.dispose(); } catch (e) {}
+    if (inst.slot && inst.slot.parentNode) inst.slot.parentNode.removeChild(inst.slot);
+    termInst.delete(tab.id);
+  }
+
+  /* 切换/应用终端视图：term = xterm，log = 逐行日志 */
+  function applyTermView(tab) {
+    const termMode = tab.view === 'term' && xtermAvailable();
+    $('#term-xterm').classList.toggle('hidden', !termMode);
+    $('#term-out').classList.toggle('hidden', termMode);
+    $('#term-send').classList.toggle('hidden', termMode);
+    $('#term-mode-btn').textContent = tab.view === 'term' ? '日志视图' : '终端视图';
+
+    termInst.forEach((inst, id) => {
+      inst.slot.classList.toggle('hidden', !(termMode && id === tab.id));
+    });
+
+    if (termMode) {
+      const inst = ensureXterm(tab);
+      if (inst) {
+        requestAnimationFrame(() => {
+          try {
+            inst.fit.fit();
+            inst.term.focus();
+          } catch (e) {}
+        });
+      }
+    }
   }
 
   function termPush(tab, line) {
@@ -899,6 +1003,10 @@
 
   function termSys(tab, text) {
     termPush(tab, { sys: text });
+    if (tab.view === 'term') {
+      const inst = termInst.get(tab.id);
+      if (inst) inst.term.write(`\x1b[90m· ${text}\x1b[0m\r\n`);
+    }
   }
 
   function repaintTerminal() {
@@ -964,12 +1072,18 @@
         $('#term-rx').textContent = 'RX ' + fmtBytes(tab.rx);
         $('#term-tx').textContent = 'TX ' + fmtBytes(tab.tx);
       }
-      termPush(tab, { d: dir, text: termText(payload), ts });
+      termPush(tab, { d: dir, text: termText(payload), ts, b: payload });
+      /* 终端只渲染收到的数据；自己发出去的内容由对端回显，避免重复显示 */
+      if (tab.view === 'term' && !dir) {
+        const inst = termInst.get(tab.id);
+        if (inst) inst.term.write(payload);
+      }
     };
   }
 
-  function connectTerminal(connId) {
+  function connectTerminal(connId, sessionId) {
     const tab = openTab({ kind: 'term', connId, title: `终端 #${connId}` });
+    if (sessionId) tab.sessionId = sessionId;
     if (!tab.proto) {
       api(`/api/conn/${connId}`)
         .then((c) => {
@@ -983,6 +1097,12 @@
         .catch(() => {});
     }
     return tab;
+  }
+
+  /* 删除会话时把它的终端标签一起关掉（不论连接是否还活着） */
+  function closeTabsForSession(sessionId) {
+    if (!sessionId) return;
+    state.tabs.filter((t) => t.kind === 'term' && t.sessionId === sessionId).forEach((t) => closeTab(t.id));
   }
 
   /* 当前终端对应的连接已经不存在（例如所属会话/服务被删）时收掉标签 */
@@ -1002,6 +1122,10 @@
     tab.lines = [];
     tab.rx = 0;
     tab.tx = 0;
+    const inst = termInst.get(tab.id);
+    if (inst) {
+      try { inst.term.clear(); } catch (e) {}
+    }
     paintTerminal(tab);
   }
 
@@ -1967,9 +2091,9 @@
     if (btn && btn.dataset.sact === 'disconnect') {
       try {
         await api(`/api/sessions/${id}/disconnect`, { method: 'POST' });
-        if (sess && sess.conn_id) closeTabsForConn(sess.conn_id);
+        /* 不关闭终端标签：保留此前的输出，标签会自己变成「已断开」 */
         await refreshSessions();
-        toast('已断开');
+        toast('已断开，输出保留');
       } catch (e) {
         toast(errText(e));
       }
@@ -1981,6 +2105,7 @@
         const connId = sess && sess.conn_id;
         await api(`/api/sessions/${id}`, { method: 'DELETE' });
         closeTabsForConn(connId);
+        closeTabsForSession(id);
         await refreshSessions();
       } catch (e) {
         toast(errText(e));
@@ -2032,6 +2157,20 @@
   });
 
   $('#btn-clear').addEventListener('click', clearActiveTerminal);
+  $('#term-mode-btn').addEventListener('click', () => {
+    const tab = activeTermTab();
+    if (!tab) return;
+    tab.view = tab.view === 'term' ? 'log' : 'term';
+    paintTerminal(tab);
+    applyTermView(tab);
+  });
+  window.addEventListener('resize', () => {
+    const tab = activeTermTab();
+    if (!tab || tab.view !== 'term') return;
+    const inst = termInst.get(tab.id);
+    if (!inst) return;
+    try { inst.fit.fit(); } catch (e) {}
+  });
   $('#send-btn').addEventListener('click', sendInput);
   $('#send-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {

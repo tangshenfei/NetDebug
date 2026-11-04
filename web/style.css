@@ -249,6 +249,13 @@ body {
   font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
   white-space: pre-wrap; word-break: break-all;
 }
+
+/* 终端仿真（xterm）容器：同一时间只显示当前标签的实例 */
+.term-body { flex: 1; min-height: 0; display: flex; position: relative; }
+.term-xterm { flex: 1; min-height: 0; position: relative; padding: 6px 8px; background: #0d1117; }
+.xterm-slot { position: absolute; inset: 6px 8px; }
+.xterm-slot.hidden { display: none; }
+.xterm { height: 100%; }
 .line { display: block; }
 .line .ts { color: #55606e; margin-right: 8px; }
 .line.tx .body { color: var(--tx); }
