@@ -301,19 +301,24 @@
 
   async function fillSerialPorts() {
     const sel = $('#s-serial-port');
+    const hint = $('#s-serial-hint');
     try {
       const ports = await api('/api/serial/ports');
       if (!ports.length) {
         sel.innerHTML = '<option value="">未检测到串口</option>';
         sel.disabled = true;
+        hint.textContent = '本机没有已注册的串口设备。USB 转串口需要先装驱动（设备管理器里出现「端口 (COM 和 LPT)」后点「刷新」）。';
         return;
       }
       sel.disabled = false;
+      hint.textContent = '';
       sel.innerHTML = ports
         .map((p) => `<option value="${h(p.port)}">${h(p.port)} — ${h(p.desc)}</option>`)
         .join('');
     } catch (e) {
       sel.innerHTML = '<option value="">读取串口列表失败</option>';
+      sel.disabled = true;
+      hint.textContent = `读取串口列表失败：${errText(e)}`;
     }
   }
 
@@ -404,7 +409,8 @@
     } else if (transport === 'serial') {
       const port = $('#s-serial-port').value;
       if (!port) {
-        toast('没有可用串口');
+        toast('没有可用串口：先插上设备并装好驱动，再点「刷新」');
+        $('#s-serial-port').scrollIntoView({ block: 'center' });
         return;
       }
       body = {
