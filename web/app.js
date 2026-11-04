@@ -887,10 +887,23 @@
     return el;
   }
 
+  /* 串口会话没有 IP 地址，标题栏改为显示「端口 · 波特率 帧格式」 */
+  function termEndpoints(tab) {
+    const sess = tab.sessionId ? state.sessions.find((s) => s.id === tab.sessionId) : null;
+    if (!sess || sess.transport !== 'serial') return null;
+    const parity = { 0: 'N', 1: 'O', 2: 'E' }[sess.parity] || 'N';
+    const bits = sess.data_bits || 8;
+    const stop = sess.stop_bits || 1;
+    const port = sess.serial_port || '串口';
+    const baud = sess.baud ? ` · ${sess.baud} ${bits}${parity}${stop}` : '';
+    return { peer: port + baud, local: '本地串口' };
+  }
+
   function paintTerminal(tab) {
+    const ep = termEndpoints(tab);
     $('#term-proto').textContent = tab.proto ? (protoLabels[tab.proto] || tab.proto) : '-';
-    $('#term-peer').textContent = tab.peer || '—';
-    $('#term-local').textContent = tab.local || '—';
+    $('#term-peer').textContent = ep ? ep.peer : tab.peer || '—';
+    $('#term-local').textContent = ep ? ep.local : tab.local || '—';
     $('#term-state').textContent = tab.state || 'closed';
     $('#term-state').className = 'state ' + (tab.state === 'open' ? 'open' : 'closed');
     $('#term-rx').textContent = 'RX ' + fmtBytes(tab.rx);

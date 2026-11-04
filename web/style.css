@@ -61,9 +61,10 @@ body {
   color: var(--muted);
 }
 .icon-btn {
-  width: 24px; height: 24px; border-radius: 6px;
+  width: 24px; height: 24px; padding: 0; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid var(--line); background: var(--bg-elev2); color: var(--text);
-  cursor: pointer; line-height: 1; font-size: 16px;
+  cursor: pointer; line-height: 1; font-size: 15px;
 }
 .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
 
