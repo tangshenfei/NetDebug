@@ -29,6 +29,9 @@ int  nd_read_file(const char *path, void **out, size_t *len); /* 调用方 free 
 /* 弹出系统文件夹选择器。1=已选择并写入 out，0=取消，-1=不可用。 */
 int  nd_pick_folder(char *out, size_t cap);
 
+/* 弹出系统文件选择器。返回值同上。 */
+int  nd_pick_file(char *out, size_t cap);
+
 /* 系统错误码 → 可读文本（Win: FormatMessage，POSIX: strerror） */
 char *nd_sys_error(int err, char *buf, size_t cap);
 

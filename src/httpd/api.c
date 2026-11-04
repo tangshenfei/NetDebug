@@ -1268,6 +1268,21 @@ int nd_api_handle(void *vreq)
         return 1;
     }
 
+    if (!strcmp(req->path, "/api/system/pick-file") && is_post) {
+        char file[600];
+        int rc = nd_pick_file(file, sizeof(file));
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddBoolToObject(o, "ok", rc == 1);
+        if (rc == 1)
+            cJSON_AddStringToObject(o, "path", file);
+        else
+            cJSON_AddStringToObject(o, "message",
+                                    rc == 0 ? "已取消" : "当前系统不支持文件选择");
+        nd_http_json(req->fd, 200, o);
+        cJSON_Delete(o);
+        return 1;
+    }
+
     if (!strcmp(req->path, "/api/services")) {
         if (is_get) {
             uint64_t ids[256];

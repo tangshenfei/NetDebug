@@ -2013,6 +2013,21 @@
       btn.textContent = '选择目录…';
     }
   });
+  $('#btn-pick-key').addEventListener('click', async () => {
+    const btn = $('#btn-pick-key');
+    btn.disabled = true;
+    btn.textContent = '选择中…';
+    try {
+      const r = await api('/api/system/pick-file', { method: 'POST', body: '{}' });
+      if (r.ok && r.path) $('#s-ssh-key').value = r.path;
+    } catch (e) {
+      toast(errText(e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '浏览…';
+    }
+  });
+
   $('#f-kind').addEventListener('change', updateFormVisibility);
   $('#f-port').addEventListener('input', () => {
     state.portTouched = true;
