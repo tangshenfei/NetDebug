@@ -256,6 +256,21 @@ int nd_ssh_handshake(nd_ssh *s, int compat, char *err, size_t errlen)
                                     "aes128-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes256-ctr");
         libssh2_session_method_pref(s->session, LIBSSH2_METHOD_MAC_CS, "hmac-sha1");
         libssh2_session_method_pref(s->session, LIBSSH2_METHOD_MAC_SC, "hmac-sha1");
+    } else {
+        /* 默认只报后端确实实现的算法：WinCNG 不支持 chacha20，
+         * 按 libssh2 的默认清单优先报 chacha 会在协商后被判为不支持；
+         * group-exchange 在 WinCNG 下也容易协商失败，先给固定组 */
+        libssh2_session_method_pref(s->session, LIBSSH2_METHOD_KEX,
+                                    "diffie-hellman-group14-sha256,"
+                                    "diffie-hellman-group16-sha512,"
+                                    "diffie-hellman-group18-sha512,"
+                                    "diffie-hellman-group-exchange-sha256");
+        libssh2_session_method_pref(s->session, LIBSSH2_METHOD_CRYPT_CS,
+                                    "aes256-ctr,aes192-ctr,aes128-ctr,"
+                                    "aes256-cbc,aes192-cbc,aes128-cbc");
+        libssh2_session_method_pref(s->session, LIBSSH2_METHOD_CRYPT_SC,
+                                    "aes256-ctr,aes192-ctr,aes128-ctr,"
+                                    "aes256-cbc,aes192-cbc,aes128-cbc");
     }
     if (libssh2_session_handshake(s->session, s->sock) != 0) {
         set_err(s, err, errlen, "SSH 握手失败");
