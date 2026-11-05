@@ -580,7 +580,18 @@ beginCase('终端右键菜单：搜索与日志');
     const m = document.getElementById('term-menu');
     return { visible: !m.classList.contains('hidden'), n: m.querySelectorAll('button').length };
   })()`);
-  check(menu.visible && menu.n === 5, `右键菜单可见且有 5 项（实际 ${JSON.stringify(menu)}）`);
+  check(menu.visible && menu.n === 7, `右键菜单可见且有 7 项（实际 ${JSON.stringify(menu)}）`);
+
+/* 两个滚动行为开关 */
+{
+  const optsBefore = await p.ev("localStorage.getItem('nd.termOpts')");
+  await p.ev("document.querySelector('#term-menu [data-act=toggle-key]').dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  await sleep(200);
+  const optsAfter = await p.ev("localStorage.getItem('nd.termOpts')");
+  check(optsBefore !== optsAfter, '「按键时滚到底部」开关可切换并持久化');
+  await p.ev("document.querySelector('#term-menu [data-act=toggle-key]').dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  await sleep(200);
+}
 
   /* 搜索 */
   await p.ev("document.querySelector('#term-menu [data-act=search]').dispatchEvent(new MouseEvent('click', { bubbles: true }))");

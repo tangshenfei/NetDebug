@@ -939,11 +939,48 @@
     ctxMenu().classList.add('hidden');
   }
 
+  /* 终端行为开关（对应 KiTTY 的「滚动到清除屏幕」「按键滚动到底部」） */
+  const TERM_OPTS_KEY = 'nd.termOpts';
+
+  function termOpts() {
+    let o = null;
+    try { o = JSON.parse(localStorage.getItem(TERM_OPTS_KEY) || 'null'); } catch (e) { o = null; }
+    return {
+      clearScroll: !o || o.clearScroll !== false,
+      keyScroll: !o || o.keyScroll !== false,
+    };
+  }
+
+  function setTermOpt(opt, value) {
+    const o = termOpts();
+    o[opt] = value;
+    try { localStorage.setItem(TERM_OPTS_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+
+  /* 数据里是否含有「清屏」序列：ESC[2J / ESC[3J / ESC c */
+  function hasClearScreen(u8) {
+    for (let i = 0; i + 1 < u8.length; i++) {
+      if (u8[i] !== 0x1b) continue;
+      if (u8[i + 1] === 0x63) return true; /* ESC c */
+      if (u8[i + 1] !== 0x5b) continue; /* '[' */
+      let j = i + 2;
+      while (j < u8.length && u8[j] >= 0x30 && u8[j] <= 0x3f) j++;
+      if (j < u8.length && u8[j] === 0x4a) { /* 'J' */
+        const n = j - (i + 2);
+        if (n === 0 || (n === 1 && (u8[i + 2] === 0x32 || u8[i + 2] === 0x33))) return true;
+      }
+    }
+    return false;
+  }
+
   function showCtxMenu(x, y, tab) {
     const menu = ctxMenu();
     const inst = tab ? termInst.get(tab.id) : null;
     const sel = inst ? inst.term.getSelection() : '';
+    const opts = termOpts();
     menu.querySelector('[data-act=copy]').disabled = !sel;
+    menu.querySelector('[data-act=toggle-clear]').classList.toggle('on', opts.clearScroll);
+    menu.querySelector('[data-act=toggle-key]').classList.toggle('on', opts.keyScroll);
     menu.classList.remove('hidden');
     /* 先显示再量尺寸，避免贴边时超出视口 */
     const r = menu.getBoundingClientRect();
@@ -1172,6 +1209,10 @@
     /* 键盘输入直接发到连接 */
     term.onData((data) => {
       const t = tabById(tab.id);
+      /* 按键时回到最新输出（KiTTY 的「按键滚动到底部」） */
+      if (termOpts().keyScroll) {
+        try { term.scrollToBottom(); } catch (e) {}
+      }
       if (!t || !t.ws || t.ws.readyState !== WebSocket.OPEN) return;
       const bytes = new TextEncoder().encode(data);
       t.ws.send(bytes);
@@ -1316,7 +1357,15 @@
       /* 终端只渲染收到的数据；自己发出去的内容由对端回显，避免重复显示 */
       if (tab.view === 'term' && !dir) {
         const inst = termInst.get(tab.id);
-        if (inst) inst.term.write(payload);
+        if (inst) {
+          /* 对端清屏时把视图带回底部（KiTTY 的「滚动到清除屏幕」） */
+          const clear = hasClearScreen(payload);
+          inst.term.write(payload, () => {
+            if (clear && termOpts().clearScroll) {
+              try { inst.term.scrollToBottom(); } catch (e) {}
+            }
+          });
+        }
       }
     };
   }
@@ -2451,6 +2500,13 @@
       openFind();
     } else if (act === 'clear') {
       clearActiveTerminal();
+    } else if (act === 'toggle-clear' || act === 'toggle-key') {
+      const key = act === 'toggle-clear' ? 'clearScroll' : 'keyScroll';
+      const o = termOpts();
+      setTermOpt(key, !o[key]);
+      toast(key === 'clearScroll'
+        ? `清屏时滚到底部：${!o[key] ? '开' : '关'}`
+        : `按键时滚到底部：${!o[key] ? '开' : '关'}`);
     }
   });
 

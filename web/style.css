@@ -277,6 +277,10 @@ body {
 .ctx-menu button:hover { background: var(--bg-elev); color: var(--accent); }
 .ctx-menu button:disabled { color: var(--muted); cursor: default; background: none; }
 .ctx-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+.ctx-check i {
+  display: inline-block; width: 14px; font-style: normal; color: var(--accent);
+}
+.ctx-check.on i::before { content: '✓'; }
 
 /* 终端查找栏 */
 .term-find {
