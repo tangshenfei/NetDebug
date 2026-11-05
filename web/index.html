@@ -102,11 +102,25 @@
               <span id="term-state" class="state">closed</span>
               <span id="term-rx" class="muted">RX 0 B</span>
               <span id="term-tx" class="muted">TX 0 B</span>
+              <button class="ghost-btn" id="term-log-btn" title="把收发内容记录到文件">日志</button>
               <button class="ghost-btn" id="term-mode-btn" title="在终端仿真与日志视图之间切换">日志视图</button>
               <button class="ghost-btn" id="btn-clear">清空</button>
               <label class="check"><input type="checkbox" id="opt-hex"> HEX</label>
               <label class="check"><input type="checkbox" id="opt-ts" checked> 时间戳</label>
             </div>
+          </div>
+          <div class="term-find hidden" id="term-find">
+            <input id="find-input" type="text" placeholder="在终端里查找…" autocomplete="off" spellcheck="false">
+            <button class="ghost-btn" id="find-prev" title="上一个">↑</button>
+            <button class="ghost-btn" id="find-next" title="下一个">↓</button>
+            <span id="find-state" class="muted"></span>
+            <button class="ghost-btn" id="find-close" title="关闭">×</button>
+          </div>
+          <div class="term-log-bar hidden" id="term-log-bar">
+            <label class="check"><input type="checkbox" id="log-on"> 记录到文件</label>
+            <input id="log-prefix" type="text" value="[{time}] " spellcheck="false"
+                   placeholder="行前缀，可用 {time} 和 {dir}">
+            <span id="log-path" class="muted"></span>
           </div>
           <div class="term-body">
             <pre class="term-out hidden" id="term-out"></pre>
@@ -572,9 +586,18 @@
   </dialog>
 
   <div id="toast" class="toast hidden"></div>
+  <div class="ctx-menu hidden" id="term-menu">
+    <button data-act="copy">复制</button>
+    <button data-act="paste">粘贴</button>
+    <button data-act="selectall">全选</button>
+    <div class="ctx-sep"></div>
+    <button data-act="search">搜索…</button>
+    <button data-act="clear">清空屏幕</button>
+  </div>
 
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm/addon-fit.js"></script>
+  <script src="/vendor/xterm/addon-search.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

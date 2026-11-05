@@ -42,6 +42,9 @@ typedef struct nd_conn {
     nd_addr        last_peer;   /* UDP 最近一次对端 */
 
     FILE          *log;
+    FILE          *sess_log;      /* 用户手动开启的记录文件（可带行前缀） */
+    char           sess_prefix[128];
+    int            sess_bol;      /* 下一条写入是否在行首 */
     struct nd_conn *next;
 } nd_conn;
 
@@ -54,6 +57,10 @@ void     nd_conn_set_rx_ready(nd_conn *c, int on);
 
 /* 直接把数据当作收/发内容广播出去（认证提示等协议层文本） */
 void     nd_conn_emit(nd_conn *c, int dir, const void *data, size_t len);
+
+/* 用户日志：写到配置目录 logs/ 下，每行可加前缀（支持 {time} 占位） */
+int      nd_conn_log_start(nd_conn *c, const char *prefix, char *path, size_t cap);
+void     nd_conn_log_stop(nd_conn *c);
 int      nd_conn_send(nd_conn *c, const void *data, size_t len);
 int      nd_conn_send_raw(nd_conn *c, const void *data, size_t len); /* 不发 WS/日志，用于协商 */
 void     nd_conn_close(nd_conn *c);

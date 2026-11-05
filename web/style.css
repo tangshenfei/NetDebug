@@ -263,6 +263,44 @@ body {
 .line.rx .body { color: var(--rx); }
 .line.sys .body { color: var(--muted); font-style: italic; }
 
+/* 终端右键菜单 */
+.ctx-menu {
+  position: fixed; z-index: 60; min-width: 150px;
+  background: var(--bg-elev2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+}
+.ctx-menu button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text);
+  padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 12.5px;
+}
+.ctx-menu button:hover { background: var(--bg-elev); color: var(--accent); }
+.ctx-menu button:disabled { color: var(--muted); cursor: default; background: none; }
+.ctx-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+
+/* 终端查找栏 */
+.term-find {
+  display: flex; gap: 8px; align-items: center;
+  padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--bg-elev);
+}
+.term-find input {
+  flex: 1; background: #0c0f14; border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 6px 10px; font-family: var(--mono); outline: none;
+}
+.term-find input:focus { border-color: var(--accent); }
+
+/* 终端日志栏 */
+.term-log-bar {
+  display: flex; gap: 10px; align-items: center;
+  padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--bg-elev);
+}
+.term-log-bar input[type="text"] {
+  flex: 1; background: #0c0f14; border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 6px 10px; font-family: var(--mono); outline: none;
+}
+.term-log-bar input[type="text"]:focus { border-color: var(--accent); }
+#log-path { font-size: 11px; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 快捷发送栏与全局预置按钮 */
 .term-quick {
   display: flex; gap: 8px; padding: 8px 12px;

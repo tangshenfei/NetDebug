@@ -1585,6 +1585,34 @@ int nd_api_handle(void *vreq)
                 nd_http_error_json(req->fd, 404, ND_E_PARAM, "conn not found");
                 return 1;
             }
+            if (!strcmp(rest, "/log") && is_post) {
+                cJSON *body = cJSON_Parse(req->body ? req->body : "");
+                cJSON *on = body ? cJSON_GetObjectItemCaseSensitive(body, "on") : NULL;
+                cJSON *pfx = body ? cJSON_GetObjectItemCaseSensitive(body, "prefix") : NULL;
+                int want = on && cJSON_IsBool(on) && cJSON_IsTrue(on);
+                cJSON *o = cJSON_CreateObject();
+                if (!want) {
+                    nd_conn_log_stop(c);
+                    cJSON_AddBoolToObject(o, "ok", 1);
+                    cJSON_AddStringToObject(o, "path", "");
+                } else {
+                    char path[600];
+                    const char *prefix = (pfx && cJSON_IsString(pfx)) ? pfx->valuestring : "";
+                    if (nd_conn_log_start(c, prefix, path, sizeof(path)) == 0) {
+                        cJSON_AddBoolToObject(o, "ok", 1);
+                        cJSON_AddStringToObject(o, "path", path);
+                    } else {
+                        cJSON_AddBoolToObject(o, "ok", 0);
+                        cJSON_AddStringToObject(o, "message", "无法创建日志文件");
+                    }
+                }
+                cJSON_Delete(body);
+                nd_http_json(req->fd, 200, o);
+                cJSON_Delete(o);
+                nd_conn_put(c);
+                return 1;
+            }
+
             if (!strcmp(rest, "/send") && is_post) {
                 cJSON *body = cJSON_Parse(req->body ? req->body : "");
                 const char *data = json_str(body, "data", "");

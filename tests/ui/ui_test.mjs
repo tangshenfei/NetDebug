@@ -570,7 +570,56 @@ beginCase('快捷发送与全局预置');
 }
 endCase();
 
-beginCase('多标签：工具与终端并存、可切换可关闭');
+beginCase('终端右键菜单：搜索与日志');
+{
+  /* 右键菜单出现 */
+  const menu = await p.ev(`(() => {
+    const el = document.querySelector('.xterm-slot:not(.hidden)');
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 40 }));
+    const m = document.getElementById('term-menu');
+    return { visible: !m.classList.contains('hidden'), n: m.querySelectorAll('button').length };
+  })()`);
+  check(menu.visible && menu.n === 5, `右键菜单可见且有 5 项（实际 ${JSON.stringify(menu)}）`);
+
+  /* 搜索 */
+  await p.ev("document.querySelector('#term-menu [data-act=search]').dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  await sleep(300);
+  check(await p.ev("!document.getElementById('term-find').classList.contains('hidden')"), '搜索栏打开');
+  await p.ev(`(() => { const e = document.getElementById('find-input'); e.value = 'RX'; e.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await sleep(500);
+  const findState = await p.ev("document.getElementById('find-state').textContent");
+  check(/\d+\/\d+|无匹配/.test(findState), `查找状态有意义：${JSON.stringify(findState)}`);
+  await p.ev("document.getElementById('find-close').click()");
+  await sleep(200);
+  check(await p.ev("document.getElementById('term-find').classList.contains('hidden')"), '搜索栏可关闭');
+
+  /* 日志：开关 + 前缀 */
+  await p.ev("document.getElementById('term-log-btn').click()");
+  await sleep(200);
+  check(await p.ev("!document.getElementById('term-log-bar').classList.contains('hidden')"), '日志栏打开');
+  await p.ev(`(() => { const e = document.getElementById('log-prefix'); e.value = '[{time}] {dir} '; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await p.ev("document.getElementById('log-on').click()");
+  await sleep(700);
+  const logPath = await p.ev("document.getElementById('log-path').textContent");
+  check(!!logPath, `日志文件已创建：${logPath}`);
+  await setVal(p.ev, 'send-input', 'log-test-line');
+  await p.ev("document.getElementById('send-btn').click()");
+  await sleep(800);
+  await p.ev("document.getElementById('log-on').click()");
+  await sleep(400);
+
+  if (logPath && fs.existsSync(logPath)) {
+    const body = fs.readFileSync(logPath, 'utf8');
+    check(body.includes('log-test-line'), '日志里记录了收发的数据');
+    const lines = body.split('\n').filter((l) => l.length > 0);
+    check(lines.every((l) => /^\[\d{2}:\d{2}:\d{2}\] (TX|RX) /.test(l)), `每行都带前缀（${lines.length} 行）`);
+  } else {
+    check(false, '日志文件存在（不存在则为失败）');
+  }
+  await p.ev("document.getElementById('term-log-btn').click()");
+}
+endCase();
 
 beginCase('多标签：工具与终端并存、可切换可关闭');
 {

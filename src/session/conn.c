@@ -75,6 +75,9 @@ static void conn_teardown(nd_conn *c)
     if (atomic_exchange(&c->closed, 1))
         return;
 
+    if (c->sess_log) {
+        nd_conn_log_stop(c);
+    }
     if (c->log) {
         nd_mutex_lock(&c->log_lock);
         fflush(c->log);
@@ -123,6 +126,116 @@ static void conn_teardown(nd_conn *c)
     nd_ws_state_event(c->id, 0);
 }
 
+static void sess_log_prefix(char *out, size_t cap, const char *prefix, int dir)
+{
+    size_t pos = 0;
+    const char *p = prefix ? prefix : "";
+    const char *dirs = dir ? "TX" : "RX";
+
+    while (*p && pos + 1 < cap) {
+        if (p[0] == '{' && !strncmp(p, "{dir}", 5)) {
+            pos += (size_t)snprintf(out + pos, cap - pos, "%s", dirs);
+            p += 5;
+            continue;
+        }
+        if (p[0] == '{' && !strncmp(p, "{time}", 6)) {
+            time_t now = time(NULL);
+            struct tm tm_now;
+            char stamp[16];
+#ifdef _WIN32
+            localtime_s(&tm_now, &now);
+#else
+            localtime_r(&now, &tm_now);
+#endif
+            strftime(stamp, sizeof(stamp), "%H:%M:%S", &tm_now);
+            pos += (size_t)snprintf(out + pos, cap - pos, "%s", stamp);
+            p += 6;
+        } else {
+            out[pos++] = *p++;
+        }
+    }
+    out[pos < cap ? pos : cap - 1] = '\0';
+}
+
+/* 用户日志：每行加前缀，按 \n 分段的流式写入 */
+static void sess_log_write(nd_conn *c, int dir, const unsigned char *data, size_t len)
+{
+    size_t i = 0;
+
+    if (!c || !c->sess_log || !len)
+        return;
+    nd_mutex_lock(&c->log_lock);
+    while (i < len) {
+        size_t j = i;
+        while (j < len && data[j] != '\n')
+            j++;
+        if (c->sess_bol) {
+            char pfx[160];
+            sess_log_prefix(pfx, sizeof(pfx), c->sess_prefix, dir);
+            if (pfx[0])
+                fwrite(pfx, 1, strlen(pfx), c->sess_log);
+            c->sess_bol = 0;
+        }
+        if (j > i)
+            fwrite(data + i, 1, j - i, c->sess_log);
+        if (j < len) {
+            fputc('\n', c->sess_log);
+            c->sess_bol = 1;
+        }
+        i = j + 1;
+    }
+    fflush(c->sess_log);
+    nd_mutex_unlock(&c->log_lock);
+}
+
+int nd_conn_log_start(nd_conn *c, const char *prefix, char *path, size_t cap)
+{
+    char dir[512];
+    char name[600];
+    time_t now = time(NULL);
+    struct tm tm_now;
+
+    if (!c)
+        return -1;
+    nd_conn_log_stop(c);
+#ifdef _WIN32
+    localtime_s(&tm_now, &now);
+#else
+    localtime_r(&now, &tm_now);
+#endif
+    snprintf(dir, sizeof(dir), "%slogs", nd_config_dir());
+    nd_mkdir_p(dir);
+    snprintf(name, sizeof(name), "%s/session-%llu-%04d%02d%02d-%02d%02d%02d.log", dir,
+             (unsigned long long)c->id, tm_now.tm_year + 1900, tm_now.tm_mon + 1,
+             tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+
+    nd_mutex_lock(&c->log_lock);
+    c->sess_log = fopen(name, "ab");
+    if (!c->sess_log) {
+        nd_mutex_unlock(&c->log_lock);
+        return -1;
+    }
+    nd_strlcpy(c->sess_prefix, prefix ? prefix : "", sizeof(c->sess_prefix));
+    c->sess_bol = 1;
+    nd_mutex_unlock(&c->log_lock);
+    if (path && cap)
+        nd_strlcpy(path, name, cap);
+    return 0;
+}
+
+void nd_conn_log_stop(nd_conn *c)
+{
+    if (!c)
+        return;
+    nd_mutex_lock(&c->log_lock);
+    if (c->sess_log) {
+        fflush(c->sess_log);
+        fclose(c->sess_log);
+        c->sess_log = NULL;
+    }
+    nd_mutex_unlock(&c->log_lock);
+}
+
 void nd_conn_note_rx(nd_conn *c, const void *data, size_t n, const nd_addr *peer)
 {
     if (!c || n == 0)
@@ -136,6 +249,7 @@ void nd_conn_note_rx(nd_conn *c, const void *data, size_t n, const nd_addr *peer
     c->rx_bytes += (uint64_t)n;
     c->last_rx_ms = nd_monotonic_ms();
     nd_ws_broadcast_data(c->id, 0, data, n);
+    sess_log_write(c, 0, (const unsigned char *)data, n);
     conn_log_write(c, 0, (const unsigned char *)data, n);
     if (c->echo)
         nd_conn_send(c, data, n);
@@ -296,6 +410,7 @@ void nd_conn_emit(nd_conn *c, int dir, const void *data, size_t n)
         c->last_rx_ms = nd_monotonic_ms();
     }
     nd_ws_broadcast_data(c->id, dir, data, (size_t)n);
+    sess_log_write(c, dir, (const unsigned char *)data, (size_t)n);
     conn_log_write(c, dir, (const unsigned char *)data, (size_t)n);
 }
 
@@ -324,6 +439,7 @@ int nd_conn_send(nd_conn *c, const void *data, size_t len)
         return -1;
     c->tx_bytes += len;
     nd_ws_broadcast_data(c->id, 1, data, len);
+    sess_log_write(c, 1, (const unsigned char *)data, len);
     conn_log_write(c, 1, (const unsigned char *)data, len);
     return 0;
 }

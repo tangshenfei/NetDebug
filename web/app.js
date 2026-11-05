@@ -931,6 +931,151 @@
     out.scrollTop = out.scrollHeight;
   }
 
+  /* ---------- 终端右键菜单 / 查找 / 日志 ---------- */
+
+  const ctxMenu = () => $('#term-menu');
+
+  function hideCtxMenu() {
+    ctxMenu().classList.add('hidden');
+  }
+
+  function showCtxMenu(x, y, tab) {
+    const menu = ctxMenu();
+    const inst = tab ? termInst.get(tab.id) : null;
+    const sel = inst ? inst.term.getSelection() : '';
+    menu.querySelector('[data-act=copy]').disabled = !sel;
+    menu.classList.remove('hidden');
+    /* 先显示再量尺寸，避免贴边时超出视口 */
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+
+  async function clipboardWrite(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+  }
+
+  async function clipboardRead() {
+    try {
+      return await navigator.clipboard.readText();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function setFindState(text) {
+    $('#find-state').textContent = text || '';
+  }
+
+  /* 自己数匹配数：xterm 的 onDidChangeResults 在非 decorations 模式下不稳定 */
+  function countMatches(term, q) {
+    if (!term || !q) return 0;
+    const buf = term.buffer.active;
+    let n = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      let at = 0;
+      while ((at = text.indexOf(q, at)) !== -1) {
+        n++;
+        at += q.length || 1;
+      }
+    }
+    return n;
+  }
+
+  const FIND_DECOR = {
+    matchBackground: '#35507a',
+    matchOverviewRuler: '#35507a',
+    activeMatchBackground: '#d29922',
+    activeMatchColorOverviewRuler: '#d29922',
+  };
+
+  function runSearch(backwards) {
+    const tab = activeTermTab();
+    if (!tab) return;
+    const inst = termInst.get(tab.id);
+    const q = $('#find-input').value;
+    if (!inst || !inst.search) return;
+    if (!q) {
+      inst.search.clearDecorations();
+      tab.findQuery = '';
+      tab.findIdx = 0;
+      setFindState('');
+      return;
+    }
+    const total = countMatches(inst.term, q);
+    if (!total) {
+      inst.search.clearDecorations();
+      tab.findQuery = q;
+      tab.findIdx = 0;
+      setFindState('无匹配');
+      return;
+    }
+    if (tab.findQuery !== q) {
+      tab.findQuery = q;
+      tab.findIdx = 0;
+    } else {
+      tab.findIdx = ((tab.findIdx + (backwards ? -1 : 1)) % total + total) % total;
+    }
+    const opts = { incremental: false, decorations: FIND_DECOR };
+    if (backwards) inst.search.findPrevious(q, opts);
+    else inst.search.findNext(q, opts);
+    setFindState(`${tab.findIdx + 1}/${total}`);
+  }
+
+  function openFind() {
+    $('#term-find').classList.remove('hidden');
+    $('#find-input').focus();
+    $('#find-input').select();
+  }
+
+  function closeFind() {
+    $('#term-find').classList.add('hidden');
+    const tab = activeTermTab();
+    const inst = tab ? termInst.get(tab.id) : null;
+    if (inst && inst.search) inst.search.clearDecorations();
+    setFindState('');
+  }
+
+  /* 日志开关：请求写到后端文件；前缀支持 {time} 占位 */
+  function logBarSync(tab) {
+    const on = !!(tab && tab.logOn);
+    $('#log-on').checked = on;
+    $('#log-path').textContent = (tab && tab.logPath) || '';
+  }
+
+  async function toggleConnLog(tab, on) {
+    if (!tab || !tab.connId) return;
+    try {
+      const r = await api(`/api/conn/${tab.connId}/log`, {
+        method: 'POST',
+        body: JSON.stringify({ on, prefix: $('#log-prefix').value }),
+      });
+      tab.logOn = on;
+      tab.logPath = on ? r.path || '' : '';
+      logBarSync(tab);
+      toast(on ? `开始记录：${tab.logPath}` : '已停止记录');
+    } catch (e) {
+      toast(errText(e));
+    }
+  }
+
   /* ---------- 快捷发送与全局预置 ---------- */
 
   const QUICK_EOL = { crlf: '\r\n', lf: '\n', cr: '\r', none: '' };
@@ -1000,6 +1145,8 @@
     const term = new Terminal({
       convertEol: true,
       cursorBlink: true,
+      /* 搜索高亮用了 decorations，属于 proposed API，不开这个开关 findNext 会抛异常 */
+      allowProposedApi: true,
       fontSize: 13,
       fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
       scrollback: 5000,
@@ -1012,8 +1159,13 @@
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
+    let search = null;
+    if (typeof SearchAddon !== 'undefined') {
+      search = new SearchAddon.SearchAddon();
+      term.loadAddon(search);
+    }
     term.open(slot);
-    inst = { term, fit, slot };
+    inst = { term, fit, slot, search };
     termInst.set(tab.id, inst);
     fit.fit();
 
@@ -1052,6 +1204,7 @@
     $('#term-quick').classList.toggle('hidden', !termMode);
     $('#quick-presets').classList.toggle('hidden', !termMode);
     $('#term-mode-btn').textContent = tab.view === 'term' ? '日志视图' : '终端视图';
+    logBarSync(tab);
 
     termInst.forEach((inst, id) => {
       inst.slot.classList.toggle('hidden', !(termMode && id === tab.id));
@@ -2262,6 +2415,74 @@
   });
 
   $('#btn-clear').addEventListener('click', clearActiveTerminal);
+  /* 终端右键菜单 */
+  $('#terminal').addEventListener('contextmenu', (ev) => {
+    const tab = activeTermTab();
+    if (!tab) return;
+    ev.preventDefault();
+    showCtxMenu(ev.clientX, ev.clientY, tab);
+  });
+  document.addEventListener('click', (ev) => {
+    if (!ev.target.closest('#term-menu')) hideCtxMenu();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { hideCtxMenu(); }
+  });
+  window.addEventListener('resize', hideCtxMenu);
+
+  $('#term-menu').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (!btn || btn.disabled) return;
+    const act = btn.dataset.act;
+    const tab = activeTermTab();
+    hideCtxMenu();
+    if (!tab) return;
+    const inst = termInst.get(tab.id);
+    if (act === 'copy') {
+      const sel = inst ? inst.term.getSelection() : '';
+      if (sel && (await clipboardWrite(sel))) toast('已复制');
+    } else if (act === 'paste') {
+      const text = await clipboardRead();
+      if (!text) { toast('剪贴板里没有文本'); return; }
+      if (inst) inst.term.paste(text); /* 走 onData → 发到连接 */
+    } else if (act === 'selectall') {
+      if (inst) inst.term.selectAll();
+    } else if (act === 'search') {
+      openFind();
+    } else if (act === 'clear') {
+      clearActiveTerminal();
+    }
+  });
+
+  /* 查找栏 */
+  $('#find-input').addEventListener('input', () => runSearch(false));
+  $('#find-input').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      runSearch(ev.shiftKey);
+    } else if (ev.key === 'Escape') {
+      closeFind();
+    }
+  });
+  $('#find-next').addEventListener('click', () => runSearch(false));
+  $('#find-prev').addEventListener('click', () => runSearch(true));
+  $('#find-close').addEventListener('click', closeFind);
+
+  /* 日志栏 */
+  $('#term-log-btn').addEventListener('click', () => {
+    $('#term-log-bar').classList.toggle('hidden');
+    const tab = activeTermTab();
+    if (tab) logBarSync(tab);
+  });
+  $('#log-on').addEventListener('change', (ev) => {
+    const tab = activeTermTab();
+    if (tab) toggleConnLog(tab, ev.target.checked);
+  });
+  $('#log-prefix').addEventListener('change', () => {
+    const tab = activeTermTab();
+    if (tab && tab.logOn) toggleConnLog(tab, true);
+  });
+
   $('#term-mode-btn').addEventListener('click', () => {
     const tab = activeTermTab();
     if (!tab) return;
