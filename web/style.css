@@ -195,6 +195,19 @@ body {
 .log-row.closed .log-state, .log-dur { color: var(--muted); }
 .log-empty { padding: 20px 12px; font-size: 12px; color: var(--muted); font-family: inherit; }
 
+/* syslog 消息行：按严重级别着色 */
+.log-row.syslog { grid-template-columns: 72px 64px minmax(120px, 190px) 1fr; }
+.log-sev { font-size: 11px; font-weight: 600; }
+.log-row.syslog.sev-0 .log-sev, .log-row.syslog.sev-0 .log-detail { color: #ff5c5c; }
+.log-row.syslog.sev-1 .log-sev, .log-row.syslog.sev-1 .log-detail { color: #ff7b7b; }
+.log-row.syslog.sev-2 .log-sev, .log-row.syslog.sev-2 .log-detail { color: #ff9d6b; }
+.log-row.syslog.sev-3 .log-sev, .log-row.syslog.sev-3 .log-detail { color: #ffb454; }
+.log-row.syslog.sev-4 .log-sev { color: #e3c95c; }
+.log-row.syslog.sev-5 .log-sev { color: #7fb8ff; }
+.log-row.syslog.sev-6 .log-sev { color: var(--muted); }
+.log-row.syslog.sev-7 .log-sev { color: #6b7684; }
+.log-row.syslog.sev-7 .log-detail { color: var(--muted); }
+
 /* 服务详情 */
 .svc-view { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .svc-bar {
@@ -403,6 +416,7 @@ input::placeholder { color: #59636f; }
 .b-ftp { background: #7a5a12; color: #ffeebf; }
 .b-http { background: #0b5f86; color: #c9ecff; }
 .b-spd { background: #8a2b62; color: #ffd6ee; }
+.b-sys { background: #4c6a1f; color: #ddf5c0; }
 
 /* ---------- 新建对话框：分组框 ---------- */
 .group {

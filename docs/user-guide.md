@@ -210,6 +210,19 @@ UDP/69 类服务，只做单文件读写，适合给设备刷固件：
 
 ![TFTP 传输](images/guide/15-tftp.png)
 
+### 4.6 Syslog 服务器
+
+接收网络设备（路由器、交换机、NAS、Linux 主机）发来的日志：
+
+![Syslog 服务](images/guide/34-syslog.png)
+
+- **双监听**：UDP（RFC 3164 / 5424 都收）+ TCP（RFC 6587，octet-counting 与换行分帧都支持）。默认端口走「常用端口 + 偏移」机制：UDP `1514` 起、TCP `6514` 起随机偏移，新建多个不互撞；也可以手动填 `514` / `6514`（注意 514 是特权端口，Linux 上需要 root）。
+- **解析**：PRI（设施/严重级别）、时间戳、主机名、tag、消息体；无 PRI 的裸文本也收，按原文显示。
+- **实时日志**：在服务实时日志里按级别着色——emerg/alert/crit 红、err 橙、warning 黄、notice 蓝、info/debug 灰。服务详情页有「日志条数」指标。
+- **落盘**：自动写到 `logs/syslog-<服务号>-<日期>.log`，每天一个文件，原始报文一行一条，跨天自动切换。
+
+验证方法：Linux 用 `logger -n <主机> -P <udp端口> "test"`，或 `nc -u <主机> <端口>` 后直接敲 `<34>Oct 11 22:14:15 host tag: message`。
+
 ---
 
 ## 5. 编辑、停止、删除与自动恢复

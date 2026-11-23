@@ -8,6 +8,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 typedef struct nd_service {
     uint64_t      id;
@@ -15,6 +16,16 @@ typedef struct nd_service {
     char          proto[16];
     nd_bind_spec  bind;
     nd_plan       plan;
+
+    /* syslog 服务：UDP 主绑定 + TCP 副绑定（RFC 6587） */
+    nd_bind_spec  bind2;
+    nd_plan       plan2;
+    int           has_bind2;
+    nd_mutex      syslog_lock;
+    int           syslog_lock_init;
+    FILE         *syslog_file;
+    char          syslog_day[16];
+    atomic_uint_fast64_t syslog_msgs;
 
     nd_thread     th_accept;
     atomic_int    refs;

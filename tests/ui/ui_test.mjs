@@ -392,6 +392,69 @@ beginCase('服务实时日志：请求、关闭与清空');
 }
 endCase();
 
+beginCase('syslog 服务：双绑定、级别着色与计数');
+{
+  /* 通过 API 创建 syslog 服务（UDP 主 + TCP 副） */
+  const svc = await api('/api/services', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'UI 测试 Syslog', proto: 'syslog',
+      bind: { kind: 'any', family: 'v4', port: 19314 },
+      bind2: { kind: 'any', family: 'v4', port: 19315 },
+    }),
+  });
+  check(!!svc.id, 'syslog 服务创建成功');
+  const started = await api(`/api/services/${svc.id}/start`, { method: 'POST' });
+  check(started.running, '服务已启动');
+  check(!!(await api(`/api/services/${svc.id}`)).bind2, '服务 JSON 带 bind2（TCP 端口）');
+  await sleep(600);
+
+  /* 先打开日志视图（实时记录，不回放历史），再发消息 */
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('UI 测试 Syslog'));
+    c.querySelector('button[data-act=conns]').click();
+  })()`);
+  await sleep(800);
+  check(await p.ev("!document.getElementById('log-view').classList.contains('hidden')"), '日志视图打开');
+
+  /* 发不同级别的 UDP 消息 */
+  const dgram = await import('node:dgram');
+  for (const [sev, text] of [[0, 'ui-emerg'], [4, 'ui-warn'], [6, 'ui-info']]) {
+    await new Promise((resolve) => {
+      const sock = dgram.createSocket('udp4');
+      const pri = 16 * 8 + sev;
+      sock.send(Buffer.from(`<${pri}>Oct 11 22:20:00 ui-host tag[9]: ${text}`), 19314, '127.0.0.1', () => {
+        sock.close();
+        resolve();
+      });
+    });
+    await sleep(350);
+  }
+  await sleep(700);
+
+  const rows = await p.ev("[...document.querySelectorAll('#log-list .log-row.syslog')].map(r => r.className)");
+  check(rows.length === 3, `syslog 日志行 3 条（实际 ${rows.length}）`);
+  check(rows.some((c) => c.includes('sev-0')), 'emerg 级别着色');
+  check(rows.some((c) => c.includes('sev-4')), 'warning 级别着色');
+  check(rows.some((c) => c.includes('sev-6')), 'info 级别着色');
+  const txt = await p.ev("document.getElementById('log-list').innerText");
+  check(txt.includes('ui-host tag[9]: ui-emerg'), '行内显示主机/tag/消息');
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('日志'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(350);
+
+  /* 服务详情：日志条数指标 */
+  const svc2 = await api(`/api/services/${svc.id}`);
+  check(svc2.syslog_msgs === 3, `syslog_msgs = 3（实际 ${svc2.syslog_msgs}）`);
+  check(svc2.bind2 && svc2.bind2.port === 19315, 'bind2 端口正确');
+
+  /* 清理 */
+  await api(`/api/services/${svc.id}`, { method: 'DELETE' });
+}
+endCase();
+
 beginCase('服务详情页：指标、槽位与操作');
 {
   await p.ev(`(() => {

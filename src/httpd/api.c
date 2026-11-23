@@ -43,7 +43,10 @@ static int json_int(cJSON *o, const char *key, int def)
 
 static void add_slots(cJSON *o, const nd_plan *p)
 {
-    cJSON *arr = cJSON_AddArrayToObject(o, "slots");
+    /* 已有 slots 数组就追加（syslog 双监听：UDP 主 + TCP 副） */
+    cJSON *arr = cJSON_GetObjectItemCaseSensitive(o, "slots");
+    if (!cJSON_IsArray(arr))
+        arr = cJSON_AddArrayToObject(o, "slots");
     for (size_t i = 0; i < p->n; i++) {
         char a[96];
         char hint[256];
@@ -82,6 +85,11 @@ static cJSON *service_json(nd_service *s)
         cJSON_AddNumberToObject(o, "conns", (double)nd_service_conn_count(s));
     cJSON_AddNumberToObject(o, "requests", (double)atomic_load(&s->http_requests));
     cJSON_AddNumberToObject(o, "peak", (double)atomic_load(&s->peak_conns));
+    if (!strcmp(s->proto, "syslog")) {
+        cJSON_AddNumberToObject(o, "syslog_msgs", (double)atomic_load(&s->syslog_msgs));
+        if (s->has_bind2)
+            cJSON_AddItemToObject(o, "bind2", nd_bind_to_json(&s->bind2));
+    }
     {
         uint64_t started = atomic_load(&s->started_ms);
         uint64_t up = (started && nd_service_running(s)) ? (nd_monotonic_ms() - started) : 0;
@@ -120,6 +128,8 @@ static cJSON *service_json(nd_service *s)
         cJSON_AddStringToObject(o, "last_error", s->last_error);
     if (s->plan.n)
         add_slots(o, &s->plan);
+    if (s->plan2.n)
+        add_slots(o, &s->plan2);
     return o;
 }
 
@@ -1328,17 +1338,31 @@ int nd_api_handle(void *vreq)
             if (strcmp(proto, "raw-tcp") != 0 && strcmp(proto, "raw-udp") != 0 &&
                 strcmp(proto, "telnet") != 0 && strcmp(proto, "ftp") != 0 &&
                 strcmp(proto, "tftp") != 0 && strcmp(proto, "http") != 0 &&
-                strcmp(proto, "speedtest") != 0) {
+                strcmp(proto, "speedtest") != 0 && strcmp(proto, "syslog") != 0) {
                 cJSON_Delete(body);
                 nd_http_error_json(req->fd, 400, ND_E_PARAM,
-                                   "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest 服务");
+                                   "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest / syslog 服务");
                 return 1;
             }
-            if (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp"))
+            if (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp") ||
+                !strcmp(proto, "syslog"))
                 b.type = SOCK_DGRAM;
             else
                 b.type = SOCK_STREAM;
             s = nd_service_new(name, proto, &b, echo);
+            if (s && !strcmp(proto, "syslog")) {
+                /* syslog 副绑定：TCP（RFC 6587），可选 */
+                cJSON *b2 = cJSON_GetObjectItemCaseSensitive(body, "bind2");
+                if (b2 && cJSON_IsObject(b2)) {
+                    nd_bind_spec nb2;
+                    char b2err[256] = "";
+                    if (nd_bind_from_json(b2, &nb2, b2err, sizeof(b2err)) == ND_OK) {
+                        nb2.type = SOCK_STREAM;
+                        s->bind2 = nb2;
+                        s->has_bind2 = 1;
+                    }
+                }
+            }
             if (s && !strcmp(proto, "tftp")) {
                 cJSON *op = cJSON_GetObjectItemCaseSensitive(body, "options");
                 cJSON *v;
@@ -1434,14 +1458,15 @@ int nd_api_handle(void *vreq)
                 if (strcmp(proto, "raw-tcp") != 0 && strcmp(proto, "raw-udp") != 0 &&
                     strcmp(proto, "telnet") != 0 && strcmp(proto, "ftp") != 0 &&
                     strcmp(proto, "tftp") != 0 && strcmp(proto, "http") != 0 &&
-                    strcmp(proto, "speedtest") != 0) {
+                    strcmp(proto, "speedtest") != 0 && strcmp(proto, "syslog") != 0) {
                     cJSON_Delete(jb);
                     nd_http_error_json(req->fd, 400, ND_E_PARAM,
-                                       "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest 服务");
+                                       "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest / syslog 服务");
                     nd_service_put(s);
                     return 1;
                 }
-                nb.type = (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp"))
+                nb.type = (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp") ||
+                           !strcmp(proto, "syslog"))
                               ? SOCK_DGRAM : SOCK_STREAM;
                 echo = json_int(jb, "echo", s->echo);
                 {
@@ -1456,6 +1481,20 @@ int nd_api_handle(void *vreq)
                 nd_strlcpy(s->proto, proto, sizeof(s->proto));
                 s->bind = nb;
                 s->echo = echo;
+                s->has_bind2 = 0;
+                memset(&s->bind2, 0, sizeof(s->bind2));
+                if (!strcmp(proto, "syslog")) {
+                    cJSON *b2 = cJSON_GetObjectItemCaseSensitive(jb, "bind2");
+                    if (b2 && cJSON_IsObject(b2)) {
+                        nd_bind_spec nb2;
+                        char b2err[256] = "";
+                        if (nd_bind_from_json(b2, &nb2, b2err, sizeof(b2err)) == ND_OK) {
+                            nb2.type = SOCK_STREAM;
+                            s->bind2 = nb2;
+                            s->has_bind2 = 1;
+                        }
+                    }
+                }
                 {
                     cJSON *op = cJSON_GetObjectItemCaseSensitive(jb, "options");
                     if (op && cJSON_IsObject(op)) {

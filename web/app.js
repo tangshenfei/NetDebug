@@ -52,6 +52,7 @@
     tftp: 'TFTP 传输服务',
     http: 'HTTP 文件服务',
     speedtest: 'LibreSpeed 测速',
+    syslog: 'Syslog 服务器',
   };
 
   /* 各协议的默认端口：取「常用端口 +1000」这类非特权端口，
@@ -65,7 +66,10 @@
     tftp: 6969,
     http: 8080,
     speedtest: 8081,
+    syslog: 1514,
   };
+  /* syslog TCP（RFC 6587）副监听的基础端口 */
+  const SYSLOG_TCP_PORT = 6514;
   const PORT_SPREAD = 100;
 
   /* 协议在界面上显示的名字 */
@@ -77,6 +81,7 @@
     tftp: 'TFTP',
     http: 'HTTP',
     speedtest: '测速',
+    syslog: 'Syslog',
   };
 
   /* 终端顶部展示用的协议名（后端返回的是内部标识） */
@@ -91,6 +96,7 @@
     ssh: 'SSH',
     serial: '串口',
     http: 'HTTP',
+    syslog: 'Syslog',
   };
 
   const h = (s) =>
@@ -687,6 +693,15 @@
   }
 
   function logRowHtml(r) {
+    if (r.kind === 'syslog') {
+      const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
+      return `<div class="log-row syslog sev-${sev}">
+        <span class="log-time">${fmtClock(r.ts)}</span>
+        <span class="log-sev">${h(r.sevName || '?')}</span>
+        <span class="log-peer">${h(r.peer || '-')}</span>
+        <span class="log-detail">${h(r.text || '')}</span>
+      </div>`;
+    }
     const open = r.state === 'open';
     return `<div class="log-row ${open ? 'open' : 'closed'}">
       <span class="log-time">${fmtClock(r.ts)}</span>
@@ -723,6 +738,23 @@
         continue;
       }
       if (!tab.rows) tab.rows = [];
+      /* syslog：一条消息就是一行记录 */
+      if (m.t === 'syslog_msg') {
+        tab.rows.push({
+          kind: 'syslog',
+          key: `s${m.ts}`,
+          ts: m.ts,
+          peer: m.peer,
+          sev: m.sev,
+          sevName: m.sev_name,
+          facName: m.fac_name,
+          text: m.text,
+          state: 'closed',
+        });
+        if (tab.rows.length > 500) tab.rows.shift();
+        schedulePaint(tab);
+        continue;
+      }
       const isStart = m.t === 'req_start' || m.t === 'conn_open';
       const key = m.t === 'req_start' || m.t === 'req_end' ? `r${m.seq}` : `c${m.conn}`;
       if (isStart) {
@@ -836,7 +868,7 @@
     $('#svc-title').textContent = svc.name;
     $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
     $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
-    $('#svc-meta').textContent = `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}`;
+    $('#svc-meta').textContent = `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
     $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
 
     const slots = svc.slots || [];
@@ -849,6 +881,7 @@
       ['运行时长', svc.running ? fmtUptime(svc.uptime_ms) : '—'],
       ['监听槽位', slots.length ? `${okSlots} / ${slots.length}` : '—'],
     ];
+    if (svc.proto === 'syslog') metrics.splice(2, 0, ['日志条数', String(svc.syslog_msgs || 0)]);
     $('#svc-metrics').innerHTML = metrics
       .map(([k, v]) => `<div class="metric"><span>${h(k)}</span><b>${h(v)}</b></div>`)
       .join('');
@@ -2075,12 +2108,32 @@
   /* 在协议基准端口附近随机取一个没被占用的端口 */
   function suggestPort(proto) {
     const base = SERVICE_PORTS[proto] || 9000;
-    const used = new Set(state.services.map((s) => s.bind && s.bind.port));
+    const used = new Set(
+      state.services
+        .map((s) => [s.bind && s.bind.port, s.bind2 && s.bind2.port])
+        .flat()
+        .filter((p) => p)
+    );
     for (let i = 0; i < 200; i++) {
       const p = base + Math.floor(Math.random() * PORT_SPREAD);
       if (p > 1024 && p < 65536 && !used.has(p)) return p;
     }
     return base;
+  }
+
+  /* syslog TCP 副监听端口：6514 + 偏移，且不撞 UDP 主端口 */
+  function suggestSyslogTcpPort(udpPort) {
+    const used = new Set(
+      state.services
+        .map((s) => [s.bind && s.bind.port, s.bind2 && s.bind2.port])
+        .flat()
+        .filter((p) => p)
+    );
+    for (let i = 0; i < 200; i++) {
+      const p = SYSLOG_TCP_PORT + Math.floor(Math.random() * PORT_SPREAD);
+      if (p > 1024 && p < 65536 && !used.has(p) && p !== udpPort) return p;
+    }
+    return SYSLOG_TCP_PORT;
   }
 
   function openServiceDialog(s) {
@@ -2101,8 +2154,11 @@
     $('#f-ftp-root').value = s && s.options ? (s.options.root || '') : '';
     $('#f-ftp-anon').checked = s && s.options ? s.options.anonymous !== false : true;
     $('#f-ftp-ro').checked = !!(s && s.options && s.options.readonly);
+    $('#f-port2').value = s && s.bind2 ? s.bind2.port : suggestSyslogTcpPort(Number($('#f-port').value));
     $('#ftp-options').classList.toggle('hidden',
       ['ftp', 'tftp', 'http'].indexOf(proto) < 0);
+    $('#wrap-port2').classList.toggle('hidden', proto !== 'syslog');
+    $('#echo-opt').classList.toggle('hidden', proto === 'syslog');
     $('#bind-result').classList.add('hidden');
     $('#bind-result').innerHTML = '';
     updateFormVisibility();
@@ -2119,6 +2175,11 @@
       bind: formBind(),
       echo: $('#f-echo').checked,
     };
+    if (body.proto === 'syslog') {
+      const b2 = formBind();
+      b2.port = Number($('#f-port2').value || 0);
+      body.bind2 = b2;
+    }
     if (body.proto === 'ftp' || body.proto === 'tftp' || body.proto === 'http') {
       body.options = {
         root: $('#f-ftp-root').value.trim(),
@@ -2248,8 +2309,12 @@
     if (!name.value || Object.values(SERVICE_DEFAULTS).includes(name.value))
       name.value = SERVICE_DEFAULTS[proto] || '调试服务';
     if (!state.portTouched) $('#f-port').value = suggestPort(proto);
+    if (proto === 'syslog')
+      $('#f-port2').value = suggestSyslogTcpPort(Number($('#f-port').value || 0));
     $('#ftp-options').classList.toggle('hidden',
       ['ftp', 'tftp', 'http'].indexOf(proto) < 0);
+    $('#wrap-port2').classList.toggle('hidden', proto !== 'syslog');
+    $('#echo-opt').classList.toggle('hidden', proto === 'syslog');
   });
   $('#btn-tftp').addEventListener('click', openTftpPanel);
   $('#tftp-get').addEventListener('click', tftpDownload);

@@ -321,6 +321,7 @@ int main(int argc, char **argv)
     suite_net_planner();
     suite_http_proto();
     suite_proto_telnet();
+    suite_proto_syslog_register();
 
     nd_platform_cleanup();
 

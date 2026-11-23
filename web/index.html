@@ -331,6 +331,9 @@
         <button type="button" class="proto-tile" data-proto="speedtest">
           <span class="badge-ico b-spd">SPD</span><span class="tile-name">测速</span>
         </button>
+        <button type="button" class="proto-tile" data-proto="syslog">
+          <span class="badge-ico b-sys">SYS</span><span class="tile-name">Syslog</span>
+        </button>
       </div>
       <select id="f-proto" class="hidden" tabindex="-1" aria-hidden="true">
         <option value="raw-tcp">原始 TCP</option>
@@ -340,6 +343,7 @@
         <option value="tftp">TFTP 服务端</option>
         <option value="http">HTTP 服务端</option>
         <option value="speedtest">LibreSpeed 测速</option>
+        <option value="syslog">Syslog 服务器</option>
       </select>
 
       <div class="group">
@@ -353,8 +357,12 @@
             <span>端口</span>
             <input id="f-port" type="number" min="0" max="65535" value="9000">
           </label>
+          <label class="field w110 hidden" id="wrap-port2">
+            <span>TCP 端口</span>
+            <input id="f-port2" type="number" min="0" max="65535" value="6514">
+          </label>
         </div>
-        <label class="check"><input type="checkbox" id="f-echo"> 把收到的数据原样回给对端（HTTP 勾选时返回请求内容）</label>
+        <label class="check" id="echo-opt"><input type="checkbox" id="f-echo"> 把收到的数据原样回给对端（HTTP 勾选时返回请求内容）</label>
       </div>
 
       <div class="group">

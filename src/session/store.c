@@ -40,6 +40,8 @@ void nd_store_save_services(void)
         cJSON_AddBoolToObject(o, "autostart", nd_service_running(s));
         cJSON_AddItemToObject(o, "bind", nd_bind_to_json(&s->bind));
         cJSON_AddNumberToObject(o, "max_conns", (double)s->max_conns);
+        if (!strcmp(s->proto, "syslog") && s->has_bind2)
+            cJSON_AddItemToObject(o, "bind2", nd_bind_to_json(&s->bind2));
         if (!strcmp(s->proto, "ftp")) {
             cJSON *op = cJSON_CreateObject();
             cJSON_AddStringToObject(op, "root", s->ftp_root);
@@ -178,6 +180,18 @@ void nd_store_load_services(void)
                 cJSON *x = cJSON_GetObjectItemCaseSensitive(op, "root");
                 if (x && cJSON_IsString(x) && x->valuestring[0])
                     nd_strlcpy(s->http_root, x->valuestring, sizeof(s->http_root));
+            }
+            if (s && !strcmp(proto, "syslog")) {
+                cJSON *b2 = cJSON_GetObjectItemCaseSensitive(item, "bind2");
+                if (b2 && cJSON_IsObject(b2)) {
+                    nd_bind_spec nb2;
+                    char b2err[256] = "";
+                    if (nd_bind_from_json(b2, &nb2, b2err, sizeof(b2err)) == ND_OK) {
+                        nb2.type = SOCK_STREAM;
+                        s->bind2 = nb2;
+                        s->has_bind2 = 1;
+                    }
+                }
             }
             /* 上次退出时在运行的服务，恢复后自动重新监听 */
             if (s) {
