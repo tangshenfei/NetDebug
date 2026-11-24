@@ -162,13 +162,29 @@
     return `${kind} · ${fam}`;
   }
 
+  /* 服务卡片渲染指纹：卡片依赖的字段没变就跳过 DOM 重建，
+   * 轮询时绝大多数 tick 都不会有变化（uptime_ms 等易变字段不计入） */
+  let servicesSig = '';
   function renderServices() {
     const protoNames = PROTO_NAMES;
     const root = $('#service-list');
     if (!state.services.length) {
-      root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有监听服务</div>';
+      if (servicesSig !== 'EMPTY') {
+        root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有监听服务</div>';
+        servicesSig = 'EMPTY';
+      }
       return;
     }
+    const sig = state.services
+      .map((s) =>
+        [s.id, s.name, s.proto, s.running, s.conns, s.requests,
+         s.bind && s.bind.port, s.bind && s.bind.kind,
+         s.bind2 && s.bind2.port,
+         (s.slots || []).filter((x) => x.ok).map((x) => x.addr).join('|')].join('\u00a7')
+      )
+      .join('\u00b6');
+    if (sig === servicesSig) return;
+    servicesSig = sig;
     root.innerHTML = state.services
       .map((s) => {
         const addrs = (s.slots || [])
@@ -239,12 +255,25 @@
     return state.tabs.find((t) => t.kind === 'term' && t.connId === connId);
   }
 
+  let sessionsSig = '';
   function renderSessions() {
     const root = $('#session-list');
     if (!state.sessions.length) {
-      root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有客户端会话</div>';
+      if (sessionsSig !== 'EMPTY') {
+        root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有客户端会话</div>';
+        sessionsSig = 'EMPTY';
+      }
       return;
     }
+    const sig = state.sessions
+      .map((s) =>
+        [s.id, s.name, s.state, s.transport, s.serial_port, s.baud,
+         s.user, s.host, s.port, s.protocol, s.family, s.conn_id,
+         !!termTabForConn(s.conn_id)].join('\u00a7')
+      )
+      .join('\u00b6');
+    if (sig === sessionsSig) return;
+    sessionsSig = sig;
     root.innerHTML = state.sessions
       .map(
         (s) => `<div class="sess" data-sess="${s.id}">
@@ -1427,7 +1456,8 @@
       allowProposedApi: true,
       fontSize: 13,
       fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
-      scrollback: 5000,
+      /* 2000 行对调试足够，5000 行会让每开一个终端都多占几 MB 缓冲 */
+      scrollback: 2000,
       theme: {
         background: '#0d1117',
         foreground: '#c9d1d9',
@@ -2988,6 +3018,7 @@
 
   /* 运行时长每秒走一格（syslog 日志流自己刷新，不做整页重建） */
   setInterval(() => {
+    if (document.hidden) return; /* 窗口不可见时不做任何定时渲染 */
     const tab = activeTab();
     if (!tab || tab.kind !== 'svc') return;
     const svc = state.services.find((s) => s.id === tab.svcId);
@@ -3021,9 +3052,16 @@
       $('#status-line').textContent = '就绪';
       connectEvents();
       setInterval(() => {
+        if (document.hidden) return; /* 最小化/切走时停止轮询，省 CPU 与电量 */
         refreshServices();
         refreshSessions();
       }, 3000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          refreshServices();
+          refreshSessions();
+        }
+      });
     } catch (e) {
       $('#status-line').textContent = '初始化失败';
       document.body.insertAdjacentHTML(

@@ -9,6 +9,14 @@
 
 #include "cJSON.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +24,7 @@
 #include <time.h>
 
 #define SYSLOG_MAX_FRAME (1024 * 1024) /* 单帧上限 1MB，超过视为垃圾流重新同步 */
+#define SYSLOG_KEEP_DAYS 7              /* 落盘文件保留天数，跨天切换时清理更旧的 */
 
 static const char *SEV_NAME[8] = {
     "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"
@@ -213,6 +222,67 @@ static void syslog_make_path(nd_service *s, char *path, size_t cap, const char *
              (unsigned long long)s->id, day);
 }
 
+/* 删除该服务超过 SYSLOG_KEEP_DAYS 天的历史文件（跨天切换时调用，一天最多一次） */
+static void syslog_purge_old(nd_service *s)
+{
+    char dir[512];
+    time_t cutoff = time(NULL) - SYSLOG_KEEP_DAYS * 86400;
+
+    snprintf(dir, sizeof(dir), "%slogs", nd_config_dir());
+#ifdef _WIN32
+    {
+        char pattern[700];
+        WIN32_FIND_DATAA d;
+        HANDLE h;
+        snprintf(pattern, sizeof(pattern), "%s\\syslog-%llu-*.log", dir,
+                 (unsigned long long)s->id);
+        h = FindFirstFileA(pattern, &d);
+        if (h == INVALID_HANDLE_VALUE)
+            return;
+        do {
+            ULARGE_INTEGER li;
+            time_t mt;
+            char full[700];
+            if (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            li.LowPart = d.ftLastWriteTime.dwLowDateTime;
+            li.HighPart = d.ftLastWriteTime.dwHighDateTime;
+            mt = (time_t)((li.QuadPart - 116444736000000000ULL) / 10000000ULL);
+            if (mt < cutoff) {
+                snprintf(full, sizeof(full), "%s\\%s", dir, d.cFileName);
+                if (remove(full) == 0)
+                    ND_LOGI("syslog: purged %s", d.cFileName);
+            }
+        } while (FindNextFileA(h, &d));
+        FindClose(h);
+    }
+#else
+    {
+        DIR *dd = opendir(dir);
+        struct dirent *de;
+        char prefix[80];
+        if (!dd)
+            return;
+        snprintf(prefix, sizeof(prefix), "syslog-%llu-", (unsigned long long)s->id);
+        while ((de = readdir(dd)) != NULL) {
+            char full[700];
+            struct stat st;
+            if (!nd_starts_with(de->d_name, prefix) ||
+                !nd_ends_with(de->d_name, ".log"))
+                continue;
+            snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+            if (stat(full, &st) != 0)
+                continue;
+            if (st.st_mtime < cutoff) {
+                if (unlink(full) == 0)
+                    ND_LOGI("syslog: purged %s", de->d_name);
+            }
+        }
+        closedir(dd);
+    }
+#endif
+}
+
 void nd_syslog_log_open(nd_service *s)
 {
     char path[600];
@@ -236,6 +306,7 @@ void nd_syslog_log_open(nd_service *s)
         s->syslog_file = NULL;
     }
     nd_strlcpy(s->syslog_day, day, sizeof(s->syslog_day));
+    syslog_purge_old(s);
     syslog_make_path(s, path, sizeof(path), day);
     s->syslog_file = fopen(path, "ab");
     if (s->syslog_file)
@@ -275,7 +346,7 @@ static void syslog_append(nd_service *s, const char *raw, size_t len)
     strftime(day, sizeof(day), "%Y%m%d", &tm_now);
 
     nd_mutex_lock(&s->syslog_lock);
-    /* 跨天：换文件 */
+    /* 跨天：换文件，并顺带清理过期文件（持锁，但一天最多一次） */
     if (!s->syslog_file || strcmp(s->syslog_day, day) != 0) {
         if (s->syslog_file) {
             fflush(s->syslog_file);
@@ -285,6 +356,7 @@ static void syslog_append(nd_service *s, const char *raw, size_t len)
         {
             char path[600];
             nd_strlcpy(s->syslog_day, day, sizeof(s->syslog_day));
+            syslog_purge_old(s);
             syslog_make_path(s, path, sizeof(path), day);
             s->syslog_file = fopen(path, "ab");
             if (s->syslog_file)
@@ -293,7 +365,8 @@ static void syslog_append(nd_service *s, const char *raw, size_t len)
     }
     if (s->syslog_file) {
         /* 统一 CRLF：Windows 记事本/大部分编辑器都认，
-         * 裸 \n 在记事本里会把整个文件显示成一行 */
+         * 裸 \n 在记事本里会把整个文件显示成一行。
+         * 行缓冲会在最后的 \r\n 处自动刷出，无需再 fflush。 */
         size_t i;
         for (i = 0; i < len; i++) {
             if (raw[i] == '\n')
@@ -302,7 +375,6 @@ static void syslog_append(nd_service *s, const char *raw, size_t len)
                 fputc(raw[i], s->syslog_file);
         }
         fputs("\r\n", s->syslog_file);
-        fflush(s->syslog_file);
     }
     nd_mutex_unlock(&s->syslog_lock);
 }
