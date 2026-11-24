@@ -215,7 +215,13 @@
         if (s) renderConns(s.id);
       }
       const active = tabById(state.activeTab);
-      if (active && (active.kind === 'svc' || active.kind === 'log')) schedulePaint(active);
+      if (active && active.kind === 'log') schedulePaint(active);
+      else if (active && active.kind === 'svc') {
+        const svc = state.services.find((s) => s.id === active.svcId);
+        /* syslog 详情页只更新顶栏状态，日志区由消息流自己增量刷新 */
+        if (svc && svc.proto === 'syslog') paintSvcHeader(active);
+        else schedulePaint(active);
+      }
     } catch (e) {
       $('#status-line').textContent = '后端连接失败';
     }
@@ -730,7 +736,9 @@
         /* 详情页的 syslog 流：暂停时不重绘，但继续收进缓冲区 */
         if (m.t === 'syslog_msg' && tab.svcId === m.svc) {
           if (!tab.syslog) tab.syslog = [];
+          tab.syslogSeq = (tab.syslogSeq || 0) + 1;
           tab.syslog.push({
+            seq: tab.syslogSeq,
             ts: m.ts,
             sev: m.sev,
             fac: m.fac,
@@ -859,7 +867,7 @@
     const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
     const host = r.host || (r.peer ? r.peer.split(':')[0] : '-');
     const tag = r.tag ? `<span class="lv-tag"> ${h(r.tag)}</span>` : '';
-    return `<div class="lv-row sev-${sev}">
+    return `<div class="lv-row sev-${sev}" data-seq="${r.seq || 0}">
       <span class="lv-time">${fmtClock(r.ts)}</span>
       <span class="lv-sev">${h(r.sev_name || '?')}</span>
       <span class="lv-host">${h(host)}${tag}</span>
@@ -868,9 +876,11 @@
   }
 
   function syslogPass(r, tab) {
-    if (tab.syslogSev && tab.syslogSev !== 'all' && String(r.sev) !== String(tab.syslogSev))
-      return false;
+    const sevActive = tab.syslogSev && tab.syslogSev !== 'all';
     const q = (tab.syslogQuery || '').trim().toLowerCase();
+    /* 快速路径：没有过滤条件时不做任何字符串处理 */
+    if (!sevActive && !q) return true;
+    if (sevActive && String(r.sev) !== String(tab.syslogSev)) return false;
     if (!q) return true;
     const hay = `${r.host || ''} ${r.tag || ''} ${r.text || ''} ${r.peer || ''} ${r.sev_name || ''}`.toLowerCase();
     return hay.includes(q);
@@ -881,22 +891,34 @@
     try {
       const rows = await api(`/api/services/${tab.svcId}/syslog`);
       tab.syslog = Array.isArray(rows) ? rows : [];
+      /* 补单调序号，供增量渲染比对 */
+      tab.syslogSeq = tab.syslog.length;
+      tab.syslog.forEach((r, i) => {
+        r.seq = i + 1;
+      });
     } catch (e) {
       tab.syslog = [];
+      tab.syslogSeq = 0;
     }
-    if (state.activeTab === tab.id) paintSvcSyslog(tab);
+    tab.syslogPaintSeq = 0;
+    if (state.activeTab === tab.id) paintSvcSyslog(tab, true);
   }
 
-  /* 节流重绘：设备洪泛时最多每 100ms 重建一次列表 */
+  /* 节流重绘：设备洪泛时最多每 200ms 刷一次 */
   const syslogPaintAt = new Map();
   function paintSvcSyslogSoon(tab) {
     const now = Date.now();
-    if (now - (syslogPaintAt.get(tab.id) || 0) < 100) return;
+    if (now - (syslogPaintAt.get(tab.id) || 0) < 200) return;
     syslogPaintAt.set(tab.id, now);
     paintSvcSyslog(tab);
   }
 
-  function paintSvcSyslog(tab) {
+  /* 过滤条件指纹：变了就必须全量重建 */
+  function syslogFilterKey(tab) {
+    return `${tab.syslogSev || 'all'}|${tab.syslogQuery || ''}`;
+  }
+
+  function paintSvcSyslog(tab, rebuild) {
     const block = $('#svc-syslog-block');
     if (!block) return;
     const svc = state.services.find((s) => s.id === tab.svcId);
@@ -913,11 +935,44 @@
     const list = $('#svc-syslog-list');
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
 
-    list.innerHTML = shown.length
-      ? shown.map(lvRowHtml).join('')
-      : all.length
-        ? '<div class="conn-note">没有符合条件的日志，试试放宽级别过滤或清空搜索词。</div>'
-        : '<div class="conn-note">还没有收到日志。把设备的 syslog 指向本机后，消息会实时出现在这里。</div>';
+    const key = syslogFilterKey(tab);
+    const prevSeq = tab.syslogPaintSeq || 0;
+    const lastSeq = shown.length ? shown[shown.length - 1].seq || 0 : 0;
+    const firstSeq = shown.length ? shown[0].seq || 0 : 0;
+
+    /* 增量路径：过滤条件没变、已有渲染、且只往尾部追加。
+     * 洪泛时每秒几十条也只做 append/removeChild，不再重建 800 行 DOM。 */
+    const canAppend =
+      !rebuild &&
+      key === tab.syslogPaintKey &&
+      list.children.length > 0 &&
+      lastSeq > prevSeq &&
+      shown.length - list.children.length <= 200 &&
+      lastSeq - prevSeq >= 0;
+
+    if (canAppend) {
+      /* 头部：把已经被 cap 挤出去的旧行删掉 */
+      while (list.firstChild && Number(list.firstChild.dataset.seq || 0) < firstSeq)
+        list.removeChild(list.firstChild);
+      /* 尾部：只追加序号大于上次渲染位置的行 */
+      const frag = document.createDocumentFragment();
+      for (const r of shown) {
+        if ((r.seq || 0) <= prevSeq) continue;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = lvRowHtml(r);
+        if (wrap.firstChild) frag.appendChild(wrap.firstChild);
+      }
+      if (frag.childNodes.length) list.appendChild(frag);
+    } else {
+      list.innerHTML = shown.length
+        ? shown.map(lvRowHtml).join('')
+        : all.length
+          ? '<div class="conn-note">没有符合条件的日志，试试放宽级别过滤或清空搜索词。</div>'
+          : '<div class="conn-note">还没有收到日志。把设备的 syslog 指向本机后，消息会实时出现在这里。</div>';
+    }
+
+    tab.syslogPaintKey = key;
+    tab.syslogPaintSeq = lastSeq;
 
     $('#svc-syslog-count').textContent = `${all.length} 条`;
     $('#svc-log-shown').textContent =
@@ -965,6 +1020,19 @@
         </div>`
       )
       .join('');
+  }
+
+  /* 只刷顶栏（服务状态、地址），不动日志区 */
+  function paintSvcHeader(tab) {
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc) return;
+    $('#svc-title').textContent = svc.name;
+    $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
+    $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
+    $('#svc-meta').textContent = svc.proto === 'syslog'
+      ? `Syslog · ${bindLabel(svc.bind)} · UDP :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`
+      : `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
+    $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
   }
 
   function paintServiceDetail(tab) {
@@ -2918,10 +2986,13 @@
     if (tab && tab.kind === 'svc') openServiceLog(tab.svcId);
   });
 
-  /* 运行时长每秒走一格 */
+  /* 运行时长每秒走一格（syslog 日志流自己刷新，不做整页重建） */
   setInterval(() => {
     const tab = activeTab();
-    if (tab && tab.kind === 'svc') paintServiceDetail(tab);
+    if (!tab || tab.kind !== 'svc') return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (svc && svc.proto === 'syslog') return;
+    paintServiceDetail(tab);
   }, 1000);
 
   $('#tabs').addEventListener('click', (ev) => {
