@@ -289,7 +289,9 @@
             <button class="ghost-btn" id="svc-edit">编辑</button>
             <button class="ghost-btn danger" id="svc-del">删除</button>
           </div>
-          <div class="svc-body">
+
+          <!-- 通用服务：指标 / 槽位 / 最近活动 -->
+          <div class="svc-body" id="svc-body-generic">
             <div class="svc-metrics" id="svc-metrics"></div>
             <div class="svc-block">
               <h3>监听槽位</h3>
@@ -298,6 +300,34 @@
             <div class="svc-block">
               <h3>最近活动</h3>
               <div id="svc-recent"></div>
+            </div>
+          </div>
+
+          <!-- syslog 服务：整页日志查看器 -->
+          <div class="svc-logview hidden" id="svc-syslog-block">
+            <div class="logview-toolbar">
+              <div class="sev-chips" id="svc-sev-chips">
+                <button type="button" class="chip active" data-sev="all">全部</button>
+                <button type="button" class="chip sev-0" data-sev="0">emerg</button>
+                <button type="button" class="chip sev-1" data-sev="1">alert</button>
+                <button type="button" class="chip sev-2" data-sev="2">crit</button>
+                <button type="button" class="chip sev-3" data-sev="3">err</button>
+                <button type="button" class="chip sev-4" data-sev="4">warning</button>
+                <button type="button" class="chip sev-5" data-sev="5">notice</button>
+                <button type="button" class="chip sev-6" data-sev="6">info</button>
+                <button type="button" class="chip sev-7" data-sev="7">debug</button>
+              </div>
+              <input id="svc-log-search" class="logview-search" type="search" placeholder="搜索主机、tag 或内容…">
+              <button class="ghost-btn" id="svc-log-pause">暂停</button>
+              <button class="ghost-btn" id="svc-log-clear">清空</button>
+            </div>
+            <div class="logview-body" id="svc-syslog-list"></div>
+            <div class="logview-status">
+              <span id="svc-syslog-count">0 条</span>
+              <span class="muted" id="svc-log-shown"></span>
+              <span class="muted" id="svc-log-rate"></span>
+              <span class="spacer"></span>
+              <label class="check inline"><input type="checkbox" id="svc-syslog-follow" checked> 自动滚动</label>
             </div>
           </div>
         </section>
@@ -331,6 +361,9 @@
         <button type="button" class="proto-tile" data-proto="speedtest">
           <span class="badge-ico b-spd">SPD</span><span class="tile-name">测速</span>
         </button>
+        <button type="button" class="proto-tile" data-proto="syslog">
+          <span class="badge-ico b-sys">SYS</span><span class="tile-name">Syslog</span>
+        </button>
       </div>
       <select id="f-proto" class="hidden" tabindex="-1" aria-hidden="true">
         <option value="raw-tcp">原始 TCP</option>
@@ -340,6 +373,7 @@
         <option value="tftp">TFTP 服务端</option>
         <option value="http">HTTP 服务端</option>
         <option value="speedtest">LibreSpeed 测速</option>
+        <option value="syslog">Syslog 服务器</option>
       </select>
 
       <div class="group">
@@ -353,8 +387,12 @@
             <span>端口</span>
             <input id="f-port" type="number" min="0" max="65535" value="9000">
           </label>
+          <label class="field w110 hidden" id="wrap-port2">
+            <span>TCP 端口</span>
+            <input id="f-port2" type="number" min="0" max="65535" value="6514">
+          </label>
         </div>
-        <label class="check"><input type="checkbox" id="f-echo"> 把收到的数据原样回给对端（HTTP 勾选时返回请求内容）</label>
+        <label class="check" id="echo-opt"><input type="checkbox" id="f-echo"> 把收到的数据原样回给对端（HTTP 勾选时返回请求内容）</label>
       </div>
 
       <div class="group">

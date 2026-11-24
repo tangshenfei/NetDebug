@@ -7,6 +7,7 @@ add_executable(test_core
     test_planner.c
     test_http.c
     test_telnet.c
+    test_syslog.c
     ${WEB_ASSETS_C}
 )
 add_dependencies(test_core web_assets)

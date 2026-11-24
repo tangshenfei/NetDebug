@@ -52,6 +52,7 @@
     tftp: 'TFTP 传输服务',
     http: 'HTTP 文件服务',
     speedtest: 'LibreSpeed 测速',
+    syslog: 'Syslog 服务器',
   };
 
   /* 各协议的默认端口：取「常用端口 +1000」这类非特权端口，
@@ -65,7 +66,10 @@
     tftp: 6969,
     http: 8080,
     speedtest: 8081,
+    syslog: 1514,
   };
+  /* syslog TCP（RFC 6587）副监听的基础端口 */
+  const SYSLOG_TCP_PORT = 6514;
   const PORT_SPREAD = 100;
 
   /* 协议在界面上显示的名字 */
@@ -77,6 +81,7 @@
     tftp: 'TFTP',
     http: 'HTTP',
     speedtest: '测速',
+    syslog: 'Syslog',
   };
 
   /* 终端顶部展示用的协议名（后端返回的是内部标识） */
@@ -91,6 +96,7 @@
     ssh: 'SSH',
     serial: '串口',
     http: 'HTTP',
+    syslog: 'Syslog',
   };
 
   const h = (s) =>
@@ -156,13 +162,29 @@
     return `${kind} · ${fam}`;
   }
 
+  /* 服务卡片渲染指纹：卡片依赖的字段没变就跳过 DOM 重建，
+   * 轮询时绝大多数 tick 都不会有变化（uptime_ms 等易变字段不计入） */
+  let servicesSig = '';
   function renderServices() {
     const protoNames = PROTO_NAMES;
     const root = $('#service-list');
     if (!state.services.length) {
-      root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有监听服务</div>';
+      if (servicesSig !== 'EMPTY') {
+        root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有监听服务</div>';
+        servicesSig = 'EMPTY';
+      }
       return;
     }
+    const sig = state.services
+      .map((s) =>
+        [s.id, s.name, s.proto, s.running, s.conns, s.requests,
+         s.bind && s.bind.port, s.bind && s.bind.kind,
+         s.bind2 && s.bind2.port,
+         (s.slots || []).filter((x) => x.ok).map((x) => x.addr).join('|')].join('\u00a7')
+      )
+      .join('\u00b6');
+    if (sig === servicesSig) return;
+    servicesSig = sig;
     root.innerHTML = state.services
       .map((s) => {
         const addrs = (s.slots || [])
@@ -209,7 +231,13 @@
         if (s) renderConns(s.id);
       }
       const active = tabById(state.activeTab);
-      if (active && (active.kind === 'svc' || active.kind === 'log')) schedulePaint(active);
+      if (active && active.kind === 'log') schedulePaint(active);
+      else if (active && active.kind === 'svc') {
+        const svc = state.services.find((s) => s.id === active.svcId);
+        /* syslog 详情页只更新顶栏状态，日志区由消息流自己增量刷新 */
+        if (svc && svc.proto === 'syslog') paintSvcHeader(active);
+        else schedulePaint(active);
+      }
     } catch (e) {
       $('#status-line').textContent = '后端连接失败';
     }
@@ -227,12 +255,25 @@
     return state.tabs.find((t) => t.kind === 'term' && t.connId === connId);
   }
 
+  let sessionsSig = '';
   function renderSessions() {
     const root = $('#session-list');
     if (!state.sessions.length) {
-      root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有客户端会话</div>';
+      if (sessionsSig !== 'EMPTY') {
+        root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有客户端会话</div>';
+        sessionsSig = 'EMPTY';
+      }
       return;
     }
+    const sig = state.sessions
+      .map((s) =>
+        [s.id, s.name, s.state, s.transport, s.serial_port, s.baud,
+         s.user, s.host, s.port, s.protocol, s.family, s.conn_id,
+         !!termTabForConn(s.conn_id)].join('\u00a7')
+      )
+      .join('\u00b6');
+    if (sig === sessionsSig) return;
+    sessionsSig = sig;
     root.innerHTML = state.sessions
       .map(
         (s) => `<div class="sess" data-sess="${s.id}">
@@ -687,6 +728,8 @@
   }
 
   function logRowHtml(r) {
+    if (r.kind === 'syslog')
+      return syslogRowHtml({ ...r, sev_name: r.sevName || '?' });
     const open = r.state === 'open';
     return `<div class="log-row ${open ? 'open' : 'closed'}">
       <span class="log-time">${fmtClock(r.ts)}</span>
@@ -719,10 +762,51 @@
     if (!tabs.length) return;
     for (const tab of tabs) {
       if (tab.kind === 'svc') {
+        /* 详情页的 syslog 流：暂停时不重绘，但继续收进缓冲区 */
+        if (m.t === 'syslog_msg' && tab.svcId === m.svc) {
+          if (!tab.syslog) tab.syslog = [];
+          tab.syslogSeq = (tab.syslogSeq || 0) + 1;
+          tab.syslog.push({
+            seq: tab.syslogSeq,
+            ts: m.ts,
+            sev: m.sev,
+            fac: m.fac,
+            sev_name: m.sev_name,
+            fac_name: m.fac_name,
+            host: m.host,
+            tag: m.tag,
+            peer: m.peer,
+            text: m.text,
+            body: m.body,
+          });
+          if (tab.syslog.length > 500) tab.syslog.shift();
+          if (!tab.syslogMarks) tab.syslogMarks = [];
+          tab.syslogMarks.push(Date.now());
+          if (tab.syslogMarks.length > 400) tab.syslogMarks.splice(0, 200);
+          if (state.activeTab === tab.id && !tab.syslogPaused) paintSvcSyslogSoon(tab);
+          continue;
+        }
         schedulePaint(tab);
         continue;
       }
       if (!tab.rows) tab.rows = [];
+      /* syslog：一条消息就是一行记录 */
+      if (m.t === 'syslog_msg') {
+        tab.rows.push({
+          kind: 'syslog',
+          key: `s${m.ts}`,
+          ts: m.ts,
+          peer: m.peer,
+          sev: m.sev,
+          sevName: m.sev_name,
+          facName: m.fac_name,
+          text: m.text,
+          state: 'closed',
+        });
+        if (tab.rows.length > 500) tab.rows.shift();
+        schedulePaint(tab);
+        continue;
+      }
       const isStart = m.t === 'req_start' || m.t === 'conn_open';
       const key = m.t === 'req_start' || m.t === 'req_end' ? `r${m.seq}` : `c${m.conn}`;
       if (isStart) {
@@ -794,9 +878,160 @@
     return `${s}s`;
   }
 
+  /* ---------- syslog 日志查看器（详情页整页模式） ---------- */
+
+  /* 活动日志标签页里的一行 */
+  function syslogRowHtml(r) {
+    const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
+    return `<div class="log-row syslog sev-${sev}">
+      <span class="log-time">${fmtClock(r.ts)}</span>
+      <span class="log-sev">${h(r.sev_name || '?')}</span>
+      <span class="log-peer">${h(r.peer || '-')}</span>
+      <span class="log-detail">${h(r.text || '')}</span>
+    </div>`;
+  }
+
+  /* 详情页日志流的一行：时间 | 级别 | 主机/tag | 消息体 */
+  function lvRowHtml(r) {
+    const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
+    const host = r.host || (r.peer ? r.peer.split(':')[0] : '-');
+    const tag = r.tag ? `<span class="lv-tag"> ${h(r.tag)}</span>` : '';
+    return `<div class="lv-row sev-${sev}" data-seq="${r.seq || 0}">
+      <span class="lv-time">${fmtClock(r.ts)}</span>
+      <span class="lv-sev">${h(r.sev_name || '?')}</span>
+      <span class="lv-host">${h(host)}${tag}</span>
+      <span class="lv-text">${h(r.body != null ? r.body : r.text || '')}</span>
+    </div>`;
+  }
+
+  function syslogPass(r, tab) {
+    const sevActive = tab.syslogSev && tab.syslogSev !== 'all';
+    const q = (tab.syslogQuery || '').trim().toLowerCase();
+    /* 快速路径：没有过滤条件时不做任何字符串处理 */
+    if (!sevActive && !q) return true;
+    if (sevActive && String(r.sev) !== String(tab.syslogSev)) return false;
+    if (!q) return true;
+    const hay = `${r.host || ''} ${r.tag || ''} ${r.text || ''} ${r.peer || ''} ${r.sev_name || ''}`.toLowerCase();
+    return hay.includes(q);
+  }
+
+  /* 历史回放（打开详情页时拉一次环形缓冲） */
+  async function loadSvcSyslog(tab) {
+    try {
+      const rows = await api(`/api/services/${tab.svcId}/syslog`);
+      tab.syslog = Array.isArray(rows) ? rows : [];
+      /* 补单调序号，供增量渲染比对 */
+      tab.syslogSeq = tab.syslog.length;
+      tab.syslog.forEach((r, i) => {
+        r.seq = i + 1;
+      });
+    } catch (e) {
+      tab.syslog = [];
+      tab.syslogSeq = 0;
+    }
+    tab.syslogPaintSeq = 0;
+    if (state.activeTab === tab.id) paintSvcSyslog(tab, true);
+  }
+
+  /* 节流重绘：设备洪泛时最多每 200ms 刷一次 */
+  const syslogPaintAt = new Map();
+  function paintSvcSyslogSoon(tab) {
+    const now = Date.now();
+    if (now - (syslogPaintAt.get(tab.id) || 0) < 200) return;
+    syslogPaintAt.set(tab.id, now);
+    paintSvcSyslog(tab);
+  }
+
+  /* 过滤条件指纹：变了就必须全量重建 */
+  function syslogFilterKey(tab) {
+    return `${tab.syslogSev || 'all'}|${tab.syslogQuery || ''}`;
+  }
+
+  function paintSvcSyslog(tab, rebuild) {
+    const block = $('#svc-syslog-block');
+    if (!block) return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc || svc.proto !== 'syslog') return;
+
+    /* 暂停时冻结到按下暂停那一刻的快照 */
+    const all = tab.syslog || [];
+    const view = tab.syslogPaused && tab.syslogFrozenAt != null
+      ? all.slice(0, tab.syslogFrozenAt)
+      : all;
+    const rows = view.filter((r) => syslogPass(r, tab));
+    const cap = 800;
+    const shown = rows.length > cap ? rows.slice(-cap) : rows;
+    const list = $('#svc-syslog-list');
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+
+    const key = syslogFilterKey(tab);
+    const prevSeq = tab.syslogPaintSeq || 0;
+    const lastSeq = shown.length ? shown[shown.length - 1].seq || 0 : 0;
+    const firstSeq = shown.length ? shown[0].seq || 0 : 0;
+
+    /* 增量路径：过滤条件没变、已有渲染、且只往尾部追加。
+     * 洪泛时每秒几十条也只做 append/removeChild，不再重建 800 行 DOM。 */
+    const canAppend =
+      !rebuild &&
+      key === tab.syslogPaintKey &&
+      list.children.length > 0 &&
+      lastSeq > prevSeq &&
+      shown.length - list.children.length <= 200 &&
+      lastSeq - prevSeq >= 0;
+
+    if (canAppend) {
+      /* 头部：把已经被 cap 挤出去的旧行删掉 */
+      while (list.firstChild && Number(list.firstChild.dataset.seq || 0) < firstSeq)
+        list.removeChild(list.firstChild);
+      /* 尾部：只追加序号大于上次渲染位置的行 */
+      const frag = document.createDocumentFragment();
+      for (const r of shown) {
+        if ((r.seq || 0) <= prevSeq) continue;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = lvRowHtml(r);
+        if (wrap.firstChild) frag.appendChild(wrap.firstChild);
+      }
+      if (frag.childNodes.length) list.appendChild(frag);
+    } else {
+      list.innerHTML = shown.length
+        ? shown.map(lvRowHtml).join('')
+        : all.length
+          ? '<div class="conn-note">没有符合条件的日志，试试放宽级别过滤或清空搜索词。</div>'
+          : '<div class="conn-note">还没有收到日志。把设备的 syslog 指向本机后，消息会实时出现在这里。</div>';
+    }
+
+    tab.syslogPaintKey = key;
+    tab.syslogPaintSeq = lastSeq;
+
+    $('#svc-syslog-count').textContent = `${all.length} 条`;
+    $('#svc-log-shown').textContent =
+      rows.length !== view.length ? `显示 ${rows.length} 条` : '';
+    if (tab.syslogPaused)
+      $('#svc-log-shown').textContent += ' · 已暂停';
+    $('#svc-log-rate').textContent = syslogRateText(tab);
+    $('#svc-log-pause').textContent = tab.syslogPaused ? '继续' : '暂停';
+    $('#svc-log-pause').classList.toggle('active', !!tab.syslogPaused);
+
+    if ($('#svc-syslog-follow').checked && (atBottom || tab.syslogForceScroll)) {
+      list.scrollTop = list.scrollHeight;
+    }
+    tab.syslogForceScroll = false;
+  }
+
+  /* 近 5 秒到达速率 */
+  function syslogRateText(tab) {
+    const marks = tab.syslogMarks || [];
+    const now = Date.now();
+    const recent = marks.filter((t) => now - t < 5000).length;
+    tab.syslogMarks = marks.filter((t) => now - t < 5000);
+    if (!recent) return '';
+    return `${(recent / 5).toFixed(1)} 条/秒`;
+  }
+
   function openServiceDetail(svcId) {
     const svc = state.services.find((s) => s.id === svcId);
-    const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}` });
+    const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}`, syslog: null });
+    if (svc && svc.proto === 'syslog' && tab.syslog === null) loadSvcSyslog(tab);
     if (state.activeTab === tab.id) paintServiceDetail(tab);
     return tab;
   }
@@ -816,9 +1051,25 @@
       .join('');
   }
 
+  /* 只刷顶栏（服务状态、地址），不动日志区 */
+  function paintSvcHeader(tab) {
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc) return;
+    $('#svc-title').textContent = svc.name;
+    $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
+    $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
+    $('#svc-meta').textContent = svc.proto === 'syslog'
+      ? `Syslog · ${bindLabel(svc.bind)} · UDP :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`
+      : `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
+    $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
+  }
+
   function paintServiceDetail(tab) {
     const svc = state.services.find((s) => s.id === tab.svcId);
+    const view = $('#svc-view');
     if (!svc) {
+      view.classList.remove('syslog-mode');
+      $('#svc-syslog-block').classList.add('hidden');
       $('#svc-title').textContent = '服务已删除';
       $('#svc-badge').textContent = '—';
       $('#svc-badge').className = 'svc-badge';
@@ -828,6 +1079,10 @@
       $('#svc-recent').innerHTML = '';
       return;
     }
+    const isSyslog = svc.proto === 'syslog';
+    view.classList.toggle('syslog-mode', isSyslog);
+    $('#svc-syslog-block').classList.toggle('hidden', !isSyslog);
+
     const title = `服务 · ${svc.name}`;
     if (tab.title !== title) {
       tab.title = title;
@@ -836,8 +1091,22 @@
     $('#svc-title').textContent = svc.name;
     $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
     $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
-    $('#svc-meta').textContent = `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}`;
+    $('#svc-meta').textContent = isSyslog
+      ? `Syslog · ${bindLabel(svc.bind)} · UDP :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`
+      : `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
     $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
+
+    /* syslog 走整页日志视图，通用指标/槽位/最近活动都不渲染 */
+    if (isSyslog) {
+      const sev = tab.syslogSev || 'all';
+      [...document.querySelectorAll('#svc-sev-chips .chip')].forEach((c) =>
+        c.classList.toggle('active', c.dataset.sev === sev)
+      );
+      if (document.activeElement !== $('#svc-log-search'))
+        $('#svc-log-search').value = tab.syslogQuery || '';
+      paintSvcSyslog(tab);
+      return;
+    }
 
     const slots = svc.slots || [];
     const okSlots = slots.filter((x) => x.ok).length;
@@ -860,6 +1129,7 @@
             .map(
               (x) => `<div class="slot-row ${x.ok ? 'ok' : 'bad'}">
                 <span class="dot"></span>
+                <span class="slot-type ${x.transport === 'udp' ? 'udp' : 'tcp'}">${(x.transport || 'tcp').toUpperCase()}</span>
                 <span class="addr">${h(x.addr || '')}</span>
                 <span class="why">${x.ok ? '监听中' : h(x.hint || '绑定失败')}</span>
               </div>`
@@ -1186,7 +1456,8 @@
       allowProposedApi: true,
       fontSize: 13,
       fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
-      scrollback: 5000,
+      /* 2000 行对调试足够，5000 行会让每开一个终端都多占几 MB 缓冲 */
+      scrollback: 2000,
       theme: {
         background: '#0d1117',
         foreground: '#c9d1d9',
@@ -2075,12 +2346,32 @@
   /* 在协议基准端口附近随机取一个没被占用的端口 */
   function suggestPort(proto) {
     const base = SERVICE_PORTS[proto] || 9000;
-    const used = new Set(state.services.map((s) => s.bind && s.bind.port));
+    const used = new Set(
+      state.services
+        .map((s) => [s.bind && s.bind.port, s.bind2 && s.bind2.port])
+        .flat()
+        .filter((p) => p)
+    );
     for (let i = 0; i < 200; i++) {
       const p = base + Math.floor(Math.random() * PORT_SPREAD);
       if (p > 1024 && p < 65536 && !used.has(p)) return p;
     }
     return base;
+  }
+
+  /* syslog TCP 副监听端口：6514 + 偏移，且不撞 UDP 主端口 */
+  function suggestSyslogTcpPort(udpPort) {
+    const used = new Set(
+      state.services
+        .map((s) => [s.bind && s.bind.port, s.bind2 && s.bind2.port])
+        .flat()
+        .filter((p) => p)
+    );
+    for (let i = 0; i < 200; i++) {
+      const p = SYSLOG_TCP_PORT + Math.floor(Math.random() * PORT_SPREAD);
+      if (p > 1024 && p < 65536 && !used.has(p) && p !== udpPort) return p;
+    }
+    return SYSLOG_TCP_PORT;
   }
 
   function openServiceDialog(s) {
@@ -2101,8 +2392,11 @@
     $('#f-ftp-root').value = s && s.options ? (s.options.root || '') : '';
     $('#f-ftp-anon').checked = s && s.options ? s.options.anonymous !== false : true;
     $('#f-ftp-ro').checked = !!(s && s.options && s.options.readonly);
+    $('#f-port2').value = s && s.bind2 ? s.bind2.port : suggestSyslogTcpPort(Number($('#f-port').value));
     $('#ftp-options').classList.toggle('hidden',
       ['ftp', 'tftp', 'http'].indexOf(proto) < 0);
+    $('#wrap-port2').classList.toggle('hidden', proto !== 'syslog');
+    $('#echo-opt').classList.toggle('hidden', proto === 'syslog');
     $('#bind-result').classList.add('hidden');
     $('#bind-result').innerHTML = '';
     updateFormVisibility();
@@ -2119,6 +2413,11 @@
       bind: formBind(),
       echo: $('#f-echo').checked,
     };
+    if (body.proto === 'syslog') {
+      const b2 = formBind();
+      b2.port = Number($('#f-port2').value || 0);
+      body.bind2 = b2;
+    }
     if (body.proto === 'ftp' || body.proto === 'tftp' || body.proto === 'http') {
       body.options = {
         root: $('#f-ftp-root').value.trim(),
@@ -2248,8 +2547,12 @@
     if (!name.value || Object.values(SERVICE_DEFAULTS).includes(name.value))
       name.value = SERVICE_DEFAULTS[proto] || '调试服务';
     if (!state.portTouched) $('#f-port').value = suggestPort(proto);
+    if (proto === 'syslog')
+      $('#f-port2').value = suggestSyslogTcpPort(Number($('#f-port').value || 0));
     $('#ftp-options').classList.toggle('hidden',
       ['ftp', 'tftp', 'http'].indexOf(proto) < 0);
+    $('#wrap-port2').classList.toggle('hidden', proto !== 'syslog');
+    $('#echo-opt').classList.toggle('hidden', proto === 'syslog');
   });
   $('#btn-tftp').addEventListener('click', openTftpPanel);
   $('#tftp-get').addEventListener('click', tftpDownload);
@@ -2630,6 +2933,52 @@
     if (tab && tab.kind === 'log') paintLog(tab);
   });
 
+  /* 详情页 syslog 区块：自动滚动与清空 */
+  /* 详情页 syslog 查看器：级别过滤、搜索、暂停、清空、自动滚动 */
+  $('#svc-syslog-follow').addEventListener('change', () => {
+    const tab = activeTab();
+    if (tab && tab.kind === 'svc') paintSvcSyslog(tab);
+  });
+  $('#svc-sev-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogSev = btn.dataset.sev;
+    [...document.querySelectorAll('#svc-sev-chips .chip')].forEach((c) =>
+      c.classList.toggle('active', c === btn)
+    );
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-search').addEventListener('input', (e) => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogQuery = e.target.value;
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-pause').addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogPaused = !tab.syslogPaused;
+    tab.syslogFrozenAt = tab.syslogPaused ? (tab.syslog || []).length : null;
+    if (!tab.syslogPaused) tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-clear').addEventListener('click', async () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    try {
+      await api(`/api/services/${tab.svcId}/syslog`, { method: 'DELETE' });
+    } catch (e) {
+      toast(errText(e));
+    }
+    tab.syslog = [];
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+
   /* ---- 服务详情页操作 ---- */
   $('#svc-toggle').addEventListener('click', async () => {
     const tab = activeTab();
@@ -2667,10 +3016,14 @@
     if (tab && tab.kind === 'svc') openServiceLog(tab.svcId);
   });
 
-  /* 运行时长每秒走一格 */
+  /* 运行时长每秒走一格（syslog 日志流自己刷新，不做整页重建） */
   setInterval(() => {
+    if (document.hidden) return; /* 窗口不可见时不做任何定时渲染 */
     const tab = activeTab();
-    if (tab && tab.kind === 'svc') paintServiceDetail(tab);
+    if (!tab || tab.kind !== 'svc') return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (svc && svc.proto === 'syslog') return;
+    paintServiceDetail(tab);
   }, 1000);
 
   $('#tabs').addEventListener('click', (ev) => {
@@ -2699,9 +3052,16 @@
       $('#status-line').textContent = '就绪';
       connectEvents();
       setInterval(() => {
+        if (document.hidden) return; /* 最小化/切走时停止轮询，省 CPU 与电量 */
         refreshServices();
         refreshSessions();
       }, 3000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          refreshServices();
+          refreshSessions();
+        }
+      });
     } catch (e) {
       $('#status-line').textContent = '初始化失败';
       document.body.insertAdjacentHTML(
