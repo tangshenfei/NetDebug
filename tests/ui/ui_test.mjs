@@ -458,9 +458,22 @@ beginCase('syslog 服务：双绑定、级别着色与计数');
     const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('UI 测试 Syslog'));
     c.click();
   })()`);
-  await sleep(700);
+  await sleep(900);
   const badges = await p.ev("[...document.querySelectorAll('#svc-slots .slot-type')].map(e => e.textContent)");
   check(badges.includes('UDP') && badges.includes('TCP'), `槽位显示 UDP/TCP 徽标（实际 ${badges.join(',')}）`);
+
+  /* 详情页内嵌 syslog 日志：历史回放 3 条 */
+  check(await p.ev("!document.getElementById('svc-syslog-block').classList.contains('hidden')"), 'syslog 区块可见');
+  const replay = await p.ev("document.querySelectorAll('#svc-syslog-list .log-row.syslog').length");
+  check(replay === 3, `详情页回放 3 条（实际 ${replay}）`);
+  const replayTxt = await p.ev("document.getElementById('svc-syslog-list').innerText");
+  check(replayTxt.includes('ui-emerg') && replayTxt.includes('ui-info'), '回放内容完整');
+  /* 清空按钮 */
+  await p.ev("document.getElementById('svc-syslog-clear').click()");
+  await sleep(700);
+  check(await p.ev("document.querySelectorAll('#svc-syslog-list .log-row.syslog').length === 0"), '清空后详情页没有行');
+  check((await api(`/api/services/${svc.id}/syslog`)).length === 0, '清空后后端环形缓冲为空');
+
   await p.ev(`(() => {
     const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('UI 测试 Syslog'));
     if (t) t.querySelector('.tab-close').click();

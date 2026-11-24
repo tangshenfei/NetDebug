@@ -362,6 +362,23 @@ void nd_syslog_handle(nd_service *s, const nd_addr *peer, const char *raw, size_
     }
     cJSON_Delete(o);
 
+    /* 环形缓冲：详情页打开时回放 */
+    if (s->syslog_lock_init) {
+        nd_mutex_lock(&s->syslog_lock);
+        {
+            nd_syslog_rec *r = &s->syslog_ring[s->syslog_head];
+            r->ts = nd_wall_ms();
+            r->sev = m.severity;
+            r->fac = m.facility;
+            nd_strlcpy(r->peer, peer_buf, sizeof(r->peer));
+            nd_strlcpy(r->text, text, sizeof(r->text));
+            s->syslog_head = (s->syslog_head + 1) % ND_SYSLOG_RING;
+            if (s->syslog_count < ND_SYSLOG_RING)
+                s->syslog_count++;
+        }
+        nd_mutex_unlock(&s->syslog_lock);
+    }
+
     syslog_append(s, raw, len);
     atomic_fetch_add(&s->syslog_msgs, 1);
 }

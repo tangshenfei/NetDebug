@@ -295,6 +295,16 @@
               <h3>监听槽位</h3>
               <div id="svc-slots"></div>
             </div>
+            <div class="svc-block hidden" id="svc-syslog-block">
+              <h3 class="svc-syslog-head">
+                <span>Syslog 日志</span>
+                <span class="muted" id="svc-syslog-count"></span>
+                <span class="spacer"></span>
+                <label class="check inline"><input type="checkbox" id="svc-syslog-follow" checked> 自动滚动</label>
+                <button class="ghost-btn" id="svc-syslog-clear">清空</button>
+              </h3>
+              <div class="svc-syslog-list" id="svc-syslog-list"></div>
+            </div>
             <div class="svc-block">
               <h3>最近活动</h3>
               <div id="svc-recent"></div>

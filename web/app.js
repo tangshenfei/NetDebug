@@ -693,15 +693,8 @@
   }
 
   function logRowHtml(r) {
-    if (r.kind === 'syslog') {
-      const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
-      return `<div class="log-row syslog sev-${sev}">
-        <span class="log-time">${fmtClock(r.ts)}</span>
-        <span class="log-sev">${h(r.sevName || '?')}</span>
-        <span class="log-peer">${h(r.peer || '-')}</span>
-        <span class="log-detail">${h(r.text || '')}</span>
-      </div>`;
-    }
+    if (r.kind === 'syslog')
+      return syslogRowHtml({ ...r, sev_name: r.sevName || '?' });
     const open = r.state === 'open';
     return `<div class="log-row ${open ? 'open' : 'closed'}">
       <span class="log-time">${fmtClock(r.ts)}</span>
@@ -734,6 +727,21 @@
     if (!tabs.length) return;
     for (const tab of tabs) {
       if (tab.kind === 'svc') {
+        /* 详情页的 syslog 区块：实时追加 */
+        if (m.t === 'syslog_msg' && tab.svcId === m.svc) {
+          if (!tab.syslog) tab.syslog = [];
+          tab.syslog.push({
+            ts: m.ts,
+            sev: m.sev,
+            fac: m.fac,
+            sev_name: m.sev_name,
+            fac_name: m.fac_name,
+            peer: m.peer,
+            text: m.text,
+          });
+          if (tab.syslog.length > 500) tab.syslog.shift();
+          if (state.activeTab === tab.id) paintSvcSyslog(tab);
+        }
         schedulePaint(tab);
         continue;
       }
@@ -826,9 +834,49 @@
     return `${s}s`;
   }
 
+  function syslogRowHtml(r) {
+    const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
+    return `<div class="log-row syslog sev-${sev}">
+      <span class="log-time">${fmtClock(r.ts)}</span>
+      <span class="log-sev">${h(r.sev_name || '?')}</span>
+      <span class="log-peer">${h(r.peer || '-')}</span>
+      <span class="log-detail">${h(r.text || '')}</span>
+    </div>`;
+  }
+
+  /* 详情页的 syslog 日志块：历史回放 + 实时追加 */
+  async function loadSvcSyslog(tab) {
+    try {
+      const rows = await api(`/api/services/${tab.svcId}/syslog`);
+      tab.syslog = Array.isArray(rows) ? rows : [];
+    } catch (e) {
+      tab.syslog = [];
+    }
+    if (state.activeTab === tab.id) paintSvcSyslog(tab);
+  }
+
+  function paintSvcSyslog(tab) {
+    const block = $('#svc-syslog-block');
+    if (!block) return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    const isSyslog = !!svc && svc.proto === 'syslog';
+    block.classList.toggle('hidden', !isSyslog);
+    if (!isSyslog) return;
+    const rows = tab.syslog || [];
+    $('#svc-syslog-count').textContent = rows.length
+      ? `${rows.length} 条${rows.length >= 500 ? '（仅最近 500 条）' : ''}`
+      : '';
+    const list = $('#svc-syslog-list');
+    list.innerHTML = rows.length
+      ? rows.map(syslogRowHtml).join('')
+      : '<div class="conn-note">还没有收到日志。把设备的 syslog 指向本机后，消息会实时出现在这里。</div>';
+    if ($('#svc-syslog-follow').checked) list.scrollTop = list.scrollHeight;
+  }
+
   function openServiceDetail(svcId) {
     const svc = state.services.find((s) => s.id === svcId);
-    const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}` });
+    const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}`, syslog: null });
+    if (svc && svc.proto === 'syslog' && tab.syslog === null) loadSvcSyslog(tab);
     if (state.activeTab === tab.id) paintServiceDetail(tab);
     return tab;
   }
@@ -902,6 +950,7 @@
         : '<div class="conn-note">这个服务没有监听槽位</div>';
 
     $('#svc-recent').innerHTML = recentRowsHtml(svc.id);
+    paintSvcSyslog(tab);
   }
 
   // ---------- 终端 ----------
@@ -2694,6 +2743,23 @@
   $('#log-follow').addEventListener('change', () => {
     const tab = activeTab();
     if (tab && tab.kind === 'log') paintLog(tab);
+  });
+
+  /* 详情页 syslog 区块：自动滚动与清空 */
+  $('#svc-syslog-follow').addEventListener('change', () => {
+    const tab = activeTab();
+    if (tab && tab.kind === 'svc') paintSvcSyslog(tab);
+  });
+  $('#svc-syslog-clear').addEventListener('click', async () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    try {
+      await api(`/api/services/${tab.svcId}/syslog`, { method: 'DELETE' });
+    } catch (e) {
+      toast(errText(e));
+    }
+    tab.syslog = [];
+    paintSvcSyslog(tab);
   });
 
   /* ---- 服务详情页操作 ---- */

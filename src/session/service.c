@@ -198,8 +198,12 @@ static void *accept_thread(void *arg)
                         continue;
                     }
                     c = svc_conn_by_fd(s, fds[i].fd);
-                    if (c)
+                    if (c) {
                         nd_conn_note_rx(c, buf, (size_t)rn, &peer);
+                        /* syslog 报文没有分隔符，终端视图里补换行便于阅读 */
+                        if (!strcmp(s->proto, "syslog"))
+                            nd_conn_note_rx(c, "\r\n", 2, NULL);
+                    }
                     if (!strcmp(s->proto, "syslog"))
                         nd_syslog_handle(s, &peer, (const char *)buf, (size_t)rn);
                     /* 非阻塞套接字：继续读直到 EWOULDBLOCK */
@@ -518,4 +522,40 @@ size_t nd_service_conn_count(nd_service *s)
     n = s->n_conns;
     nd_mutex_unlock(&s->lock);
     return n;
+}
+
+size_t nd_service_syslog_snapshot(nd_service *s, nd_syslog_rec *out,
+                                  size_t cap, int skip_last)
+{
+    size_t n = 0, i;
+
+    if (!s || !out || !cap || !s->syslog_lock_init)
+        return 0;
+
+    nd_mutex_lock(&s->syslog_lock);
+    {
+        size_t have = s->syslog_count;
+        size_t skip = skip_last && have ? 1 : 0;
+        size_t want = have - skip;
+        if (want > cap)
+            want = cap;
+        /* 跳过最后 skip 条，取最新的 want 条里最老的在前 */
+        for (i = 0; i < want; i++) {
+            size_t back = skip + (want - 1 - i); /* 0 = 最新 */
+            size_t idx = (s->syslog_head + ND_SYSLOG_RING - 1 - back) % ND_SYSLOG_RING;
+            out[n++] = s->syslog_ring[idx];
+        }
+    }
+    nd_mutex_unlock(&s->syslog_lock);
+    return n;
+}
+
+void nd_service_syslog_clear(nd_service *s)
+{
+    if (!s || !s->syslog_lock_init)
+        return;
+    nd_mutex_lock(&s->syslog_lock);
+    s->syslog_head = 0;
+    s->syslog_count = 0;
+    nd_mutex_unlock(&s->syslog_lock);
 }

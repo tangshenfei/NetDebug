@@ -10,6 +10,18 @@
 #include <stdint.h>
 #include <stdio.h>
 
+/* syslog 最近消息环形缓冲：服务详情页打开时回放历史用 */
+#define ND_SYSLOG_RING 500
+#define ND_SYSLOG_TEXT 1024
+
+typedef struct nd_syslog_rec {
+    uint64_t ts;
+    int      sev;
+    int      fac;
+    char     peer[64];
+    char     text[ND_SYSLOG_TEXT];
+} nd_syslog_rec;
+
 typedef struct nd_service {
     uint64_t      id;
     char          name[64];
@@ -26,6 +38,9 @@ typedef struct nd_service {
     FILE         *syslog_file;
     char          syslog_day[16];
     atomic_uint_fast64_t syslog_msgs;
+    nd_syslog_rec syslog_ring[ND_SYSLOG_RING];
+    size_t        syslog_head;   /* 下一个写入位置 */
+    size_t        syslog_count;  /* 有效条数 */
 
     nd_thread     th_accept;
     atomic_int    refs;
@@ -82,5 +97,11 @@ int   nd_service_running(const nd_service *s);
 size_t nd_service_conn_count(nd_service *s);
 
 void  nd_service_detach_conn(uint64_t service_id, nd_conn *c);
+
+/* 取最近 syslog 消息（按时间顺序拷到 out，返回条数）。
+ * skip_last=1 时跳过最后一条（调用方已有该条，避免重复）。 */
+size_t nd_service_syslog_snapshot(nd_service *s, nd_syslog_rec *out,
+                                  size_t cap, int skip_last);
+void   nd_service_syslog_clear(nd_service *s);
 
 #endif /* ND_SERVICE_H */

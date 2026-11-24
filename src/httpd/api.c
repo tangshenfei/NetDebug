@@ -14,6 +14,7 @@
 #include "proto/ftp_client.h"
 #include "proto/http_client.h"
 #include "proto/tftp_client.h"
+#include "proto/syslog_server.h"
 #include "proto/smb2_client.h"
 #include "session/conn.h"
 #include "session/smb.h"
@@ -1573,6 +1574,52 @@ int nd_api_handle(void *vreq)
                     cJSON_AddBoolToObject(o, "ok", 1);
                     nd_http_json(req->fd, 200, o);
                     cJSON_Delete(o);
+                }
+                nd_service_put(s);
+                return 1;
+            }
+            /* syslog 最近消息：GET 回放 / DELETE 清空 */
+            if (!strcmp(rest, "/syslog") && (is_get || is_delete)) {
+                if (!strcmp(s->proto, "syslog")) {
+                    if (is_get) {
+                        nd_syslog_rec *recs =
+                            (nd_syslog_rec *)malloc(ND_SYSLOG_RING * sizeof(*recs));
+                        size_t n;
+                        cJSON *arr;
+                        if (!recs) {
+                            nd_http_error_json(req->fd, 500, ND_E_INTERNAL, "out of memory");
+                            nd_service_put(s);
+                            return 1;
+                        }
+                        n = nd_service_syslog_snapshot(s, recs, ND_SYSLOG_RING, 0);
+                        arr = cJSON_CreateArray();
+                        for (size_t i = 0; i < n; i++) {
+                            cJSON *o = cJSON_CreateObject();
+                            cJSON_AddNumberToObject(o, "ts", (double)recs[i].ts);
+                            cJSON_AddNumberToObject(o, "sev", recs[i].sev);
+                            cJSON_AddNumberToObject(o, "fac", recs[i].fac);
+                            cJSON_AddStringToObject(o, "sev_name",
+                                                    nd_syslog_severity_name(recs[i].sev));
+                            cJSON_AddStringToObject(o, "fac_name",
+                                                    nd_syslog_facility_name(recs[i].fac));
+                            cJSON_AddStringToObject(o, "peer", recs[i].peer);
+                            cJSON_AddStringToObject(o, "text", recs[i].text);
+                            cJSON_AddItemToArray(arr, o);
+                        }
+                        nd_http_json(req->fd, 200, arr);
+                        cJSON_Delete(arr);
+                        free(recs);
+                    } else {
+                        nd_service_syslog_clear(s);
+                        {
+                            cJSON *o = cJSON_CreateObject();
+                            cJSON_AddBoolToObject(o, "ok", 1);
+                            nd_http_json(req->fd, 200, o);
+                            cJSON_Delete(o);
+                        }
+                    }
+                } else {
+                    nd_http_error_json(req->fd, 400, ND_E_PARAM, "该服务不是 syslog");
                 }
                 nd_service_put(s);
                 return 1;
