@@ -392,6 +392,126 @@ beginCase('服务实时日志：请求、关闭与清空');
 }
 endCase();
 
+beginCase('syslog 服务：双绑定、级别着色与计数');
+{
+  /* 通过 API 创建 syslog 服务（UDP 主 + TCP 副） */
+  const svc = await api('/api/services', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'UI 测试 Syslog', proto: 'syslog',
+      bind: { kind: 'any', family: 'v4', port: 19314 },
+      bind2: { kind: 'any', family: 'v4', port: 19315 },
+    }),
+  });
+  check(!!svc.id, 'syslog 服务创建成功');
+  const started = await api(`/api/services/${svc.id}/start`, { method: 'POST' });
+  check(started.running, '服务已启动');
+  check(!!(await api(`/api/services/${svc.id}`)).bind2, '服务 JSON 带 bind2（TCP 端口）');
+  await sleep(600);
+
+  /* 先打开日志视图（实时记录，不回放历史），再发消息 */
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('UI 测试 Syslog'));
+    c.querySelector('button[data-act=conns]').click();
+  })()`);
+  await sleep(800);
+  check(await p.ev("!document.getElementById('log-view').classList.contains('hidden')"), '日志视图打开');
+
+  /* 发不同级别的 UDP 消息 */
+  const dgram = await import('node:dgram');
+  for (const [sev, text] of [[0, 'ui-emerg'], [4, 'ui-warn'], [6, 'ui-info']]) {
+    await new Promise((resolve) => {
+      const sock = dgram.createSocket('udp4');
+      const pri = 16 * 8 + sev;
+      sock.send(Buffer.from(`<${pri}>Oct 11 22:20:00 ui-host tag[9]: ${text}`), 19314, '127.0.0.1', () => {
+        sock.close();
+        resolve();
+      });
+    });
+    await sleep(350);
+  }
+  await sleep(700);
+
+  const rows = await p.ev("[...document.querySelectorAll('#log-list .log-row.syslog')].map(r => r.className)");
+  check(rows.length === 3, `syslog 日志行 3 条（实际 ${rows.length}）`);
+  check(rows.some((c) => c.includes('sev-0')), 'emerg 级别着色');
+  check(rows.some((c) => c.includes('sev-4')), 'warning 级别着色');
+  check(rows.some((c) => c.includes('sev-6')), 'info 级别着色');
+  const txt = await p.ev("document.getElementById('log-list').innerText");
+  check(txt.includes('ui-host tag[9]: ui-emerg'), '行内显示主机/tag/消息');
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('日志'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(350);
+
+  /* 服务详情：日志条数指标、槽位带传输类型 */
+  const svc2 = await api(`/api/services/${svc.id}`);
+  check(svc2.syslog_msgs === 3, `syslog_msgs = 3（实际 ${svc2.syslog_msgs}）`);
+  check(svc2.bind2 && svc2.bind2.port === 19315, 'bind2 端口正确');
+  const slotTypes = (svc2.slots || []).map((x) => x.transport);
+  check(slotTypes.includes('udp'), '槽位带 UDP 类型');
+  check(slotTypes.includes('tcp'), '槽位带 TCP 类型');
+
+  /* 详情页：syslog 专属整页日志视图 */
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('UI 测试 Syslog'));
+    c.click();
+  })()`);
+  await sleep(900);
+  check(await p.ev("document.getElementById('svc-view').classList.contains('syslog-mode')"), '进入 syslog 整页布局');
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-body-generic')).display === 'none'"),
+    '通用指标区隐藏'
+  );
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-syslog-block')).display === 'flex'"),
+    '日志视图铺满'
+  );
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-log-open')).display === 'none'"),
+    '活动日志按钮在 syslog 下隐藏'
+  );
+  const meta = await p.ev("document.getElementById('svc-meta').textContent");
+  check(/UDP :\d+/.test(meta) && /TCP :\d+/.test(meta), `顶栏标明 UDP/TCP（实际 ${meta}）`);
+
+  /* 历史回放 3 条 */
+  const replay = await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length");
+  check(replay === 3, `详情页回放 3 条（实际 ${replay}）`);
+  const replayTxt = await p.ev("document.getElementById('svc-syslog-list').innerText");
+  check(replayTxt.includes('ui-emerg') && replayTxt.includes('ui-info'), '回放内容完整');
+
+  /* 级别过滤：emerg 只剩 1 条 */
+  await p.ev(`document.querySelector('#svc-sev-chips .chip[data-sev="0"]').click()`);
+  await sleep(400);
+  check(await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length === 1"), '级别过滤 emerg 只剩 1 条');
+  await p.ev(`document.querySelector('#svc-sev-chips .chip[data-sev="all"]').click()`);
+  await sleep(400);
+
+  /* 搜索过滤 */
+  await p.ev(`(() => { const e=document.getElementById('svc-log-search'); e.value='ui-warn'; e.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+  await sleep(400);
+  check(await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length === 1"), '搜索过滤只剩 1 条');
+  await p.ev(`(() => { const e=document.getElementById('svc-log-search'); e.value=''; e.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+  await sleep(300);
+
+  /* 清空 */
+  await p.ev("document.getElementById('svc-log-clear').click()");
+  await sleep(700);
+  check(await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length === 0"), '清空后详情页没有行');
+  check((await api(`/api/services/${svc.id}/syslog`)).length === 0, '清空后后端环形缓冲为空');
+
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('UI 测试 Syslog'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(350);
+
+  /* 清理 */
+  await api(`/api/services/${svc.id}`, { method: 'DELETE' });
+}
+endCase();
+
 beginCase('服务详情页：指标、槽位与操作');
 {
   await p.ev(`(() => {
@@ -518,8 +638,13 @@ eq(await p.ev("document.getElementById('term-proto').textContent"), 'TCP', '终�
 check((await p.ev("document.getElementById('term-peer').textContent")).includes('19201'), '终端显示对端地址');
 await setVal(p.ev, 'send-input', 'ping-1');
 await p.ev("document.getElementById('send-btn').click()");
+/* 终端视图下日志 DOM 不逐条生成，切到日志视图再看收发记录 */
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(400);
 check(await waitFor(p.ev, "document.getElementById('term-out').textContent.includes('RX ping-1')"), '收到服务端回显');
 check((await p.ev("document.getElementById('term-out').textContent")).includes('TX ping-1'), '本地发送已记录');
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(300);
 endCase();
 
 beginCase('终端视图切换与清空');
@@ -532,6 +657,99 @@ eq((await p.ev("document.getElementById('term-out').textContent")).trim(), '', '
 await p.ev("document.getElementById('opt-hex').click()");
 await sleep(200);
 check(!(await p.ev("document.getElementById('opt-hex').checked")), 'HEX 开关可关闭');
+endCase();
+
+beginCase('快捷发送与全局预置');
+{
+  check(await p.ev("!document.getElementById('term-quick').classList.contains('hidden')"), '终端模式显示快捷发送栏');
+  const cmd = `UI-TEST-${Date.now()}`;
+  await p.ev(`(() => {
+    const e = document.getElementById('quick-input');
+    e.value = ${JSON.stringify(cmd)};
+    e.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await p.ev("document.getElementById('quick-save').click()");
+  await sleep(800);
+  check(
+    (await p.ev("[...document.querySelectorAll('.quick-preset')].map(b => b.textContent)")).includes(cmd),
+    '存为预置后按钮出现在列表里'
+  );
+  check(((await api('/api/presets')) || []).includes(cmd), '预置已写入后端（重启后仍在）');
+
+  const txBefore = await p.ev("document.getElementById('term-tx').textContent");
+  await p.ev(`(() => {
+    const b = [...document.querySelectorAll('.quick-preset')].find((x) => x.textContent === ${JSON.stringify(cmd)});
+    if (b) b.click();
+  })()`);
+  await sleep(600);
+  check((await p.ev("document.getElementById('term-tx').textContent")) !== txBefore, '点预置按钮后 TX 字节增加');
+
+  /* 清理：把测试命令从后端删掉，避免污染真实配置 */
+  const list = (await api('/api/presets')) || [];
+  await api('/api/presets', { method: 'PUT', body: JSON.stringify({ presets: list.filter((x) => !x.startsWith('UI-TEST-')) }) });
+}
+endCase();
+
+beginCase('终端右键菜单：搜索与日志');
+{
+  /* 右键菜单出现 */
+  const menu = await p.ev(`(() => {
+    const el = document.querySelector('.xterm-slot:not(.hidden)');
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 40 }));
+    const m = document.getElementById('term-menu');
+    return { visible: !m.classList.contains('hidden'), n: m.querySelectorAll('button').length };
+  })()`);
+  check(menu.visible && menu.n === 7, `右键菜单可见且有 7 项（实际 ${JSON.stringify(menu)}）`);
+
+/* 两个滚动行为开关 */
+{
+  const optsBefore = await p.ev("localStorage.getItem('nd.termOpts')");
+  await p.ev("document.querySelector('#term-menu [data-act=toggle-key]').dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  await sleep(200);
+  const optsAfter = await p.ev("localStorage.getItem('nd.termOpts')");
+  check(optsBefore !== optsAfter, '「按键时滚到底部」开关可切换并持久化');
+  await p.ev("document.querySelector('#term-menu [data-act=toggle-key]').dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  await sleep(200);
+}
+
+  /* 搜索 */
+  await p.ev("document.querySelector('#term-menu [data-act=search]').dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+  await sleep(300);
+  check(await p.ev("!document.getElementById('term-find').classList.contains('hidden')"), '搜索栏打开');
+  await p.ev(`(() => { const e = document.getElementById('find-input'); e.value = 'RX'; e.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await sleep(500);
+  const findState = await p.ev("document.getElementById('find-state').textContent");
+  check(/\d+\/\d+|无匹配/.test(findState), `查找状态有意义：${JSON.stringify(findState)}`);
+  await p.ev("document.getElementById('find-close').click()");
+  await sleep(200);
+  check(await p.ev("document.getElementById('term-find').classList.contains('hidden')"), '搜索栏可关闭');
+
+  /* 日志：开关 + 前缀 */
+  await p.ev("document.getElementById('term-log-btn').click()");
+  await sleep(200);
+  check(await p.ev("!document.getElementById('term-log-bar').classList.contains('hidden')"), '日志栏打开');
+  await p.ev(`(() => { const e = document.getElementById('log-prefix'); e.value = '[{time}] {dir} '; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await p.ev("document.getElementById('log-on').click()");
+  await sleep(700);
+  const logPath = await p.ev("document.getElementById('log-path').textContent");
+  check(!!logPath, `日志文件已创建：${logPath}`);
+  await setVal(p.ev, 'send-input', 'log-test-line');
+  await p.ev("document.getElementById('send-btn').click()");
+  await sleep(800);
+  await p.ev("document.getElementById('log-on').click()");
+  await sleep(400);
+
+  if (logPath && fs.existsSync(logPath)) {
+    const body = fs.readFileSync(logPath, 'utf8');
+    check(body.includes('log-test-line'), '日志里记录了收发的数据');
+    const lines = body.split('\n').filter((l) => l.length > 0);
+    check(lines.every((l) => /^\[\d{2}:\d{2}:\d{2}\] (TX|RX) /.test(l)), `每行都带前缀（${lines.length} 行）`);
+  } else {
+    check(false, '日志文件存在（不存在则为失败）');
+  }
+  await p.ev("document.getElementById('term-log-btn').click()");
+}
 endCase();
 
 beginCase('多标签：工具与终端并存、可切换可关闭');
@@ -566,22 +784,28 @@ beginCase('多标签：工具与终端并存、可切换可关闭');
 }
 endCase();
 
-beginCase('会话断开：按钮与终端收尾');
+beginCase('会话断开：保留终端与历史输出');
 {
   const txt = await p.ev(`(() => {
     const c = [...document.querySelectorAll('#session-list .sess')].find(x => x.innerText.includes('UI 测试会话'));
     return c ? c.innerText.replace(/\\n/g, ' / ') : '';
   })()`);
   check(txt.includes('断开'), `已连接会话显示断开按钮：${txt}`);
+  check(txt.includes('切到终端'), '终端已打开时按钮显示「切到终端」');
 }
+const linesBefore = await p.ev("document.querySelectorAll('#term-out .line').length");
 await p.ev(`(() => {
   const c = [...document.querySelectorAll('#session-list .sess')].find(x => x.innerText.includes('UI 测试会话'));
   c.querySelector('button[data-sact=disconnect]').click();
 })()`);
 await sleep(1300);
-check(await p.ev("document.getElementById('terminal').classList.contains('hidden')"), '断开后终端关闭');
-check(await p.ev("!document.getElementById('welcome').classList.contains('hidden')"), '回到欢迎页');
-eq((await p.ev("document.getElementById('tabs').innerHTML")).trim(), '', '标签页已清空');
+check(await p.ev("!document.getElementById('terminal').classList.contains('hidden')"), '断开后终端不关闭');
+check((await p.ev("document.querySelectorAll('#tabs .tab').length")) === 1, '断开后标签页保留');
+check(
+  (await p.ev("document.querySelectorAll('#term-out .line').length")) >= linesBefore,
+  `历史输出保留（断开前 ${linesBefore} 行）`
+);
+check(await p.ev("document.getElementById('term-state').textContent === 'closed'"), '终端状态变为 closed');
 check(
   await p.ev(`(() => {
     const c = [...document.querySelectorAll('#session-list .sess')].find(x => x.innerText.includes('UI 测试会话'));
@@ -646,7 +870,11 @@ opened = await waitFor(p.ev, "document.getElementById('term-state').textContent 
 check(opened, 'UDP 会话已连接');
 await setVal(p.ev, 'send-input', 'udp-ping');
 await p.ev("document.getElementById('send-btn').click()");
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(400);
 check(await waitFor(p.ev, "document.getElementById('term-out').textContent.includes('RX udp-ping')"), 'UDP 数据回显');
+await p.ev("document.getElementById('term-mode-btn').click()");
+await sleep(300);
 endCase();
 
 beginCase('HTTP 调试工具');

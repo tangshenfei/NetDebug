@@ -56,5 +56,6 @@ void suite_net_url(void);
 void suite_net_planner(void);
 void suite_http_proto(void);
 void suite_proto_telnet(void);
+void suite_proto_syslog_register(void);
 
 #endif /* ND_TEST_FRAMEWORK_H */

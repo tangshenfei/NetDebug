@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
 static nd_mutex g_reg_lock;
 static int g_reg_ready = 0;
 static nd_conn *g_conns = NULL;
@@ -30,6 +29,10 @@ static void conn_registry_init(void)
 static void conn_log_open(nd_conn *c)
 {
     char dir[512], path[600];
+    /* 逐字节 hex 落盘开销很大（约为流量的 4~5 倍），默认关闭；
+     * 需要排查时用 NETDEBUG_CONN_LOG=1 打开 */
+    if (!getenv("NETDEBUG_CONN_LOG"))
+        return;
     snprintf(dir, sizeof(dir), "%slogs", nd_config_dir());
     nd_mkdir_p(dir);
     snprintf(path, sizeof(path), "%s/conn-%llu.log", dir, (unsigned long long)c->id);
@@ -72,6 +75,9 @@ static void conn_teardown(nd_conn *c)
     if (atomic_exchange(&c->closed, 1))
         return;
 
+    if (c->sess_log) {
+        nd_conn_log_stop(c);
+    }
     if (c->log) {
         nd_mutex_lock(&c->log_lock);
         fflush(c->log);
@@ -120,6 +126,116 @@ static void conn_teardown(nd_conn *c)
     nd_ws_state_event(c->id, 0);
 }
 
+static void sess_log_prefix(char *out, size_t cap, const char *prefix, int dir)
+{
+    size_t pos = 0;
+    const char *p = prefix ? prefix : "";
+    const char *dirs = dir ? "TX" : "RX";
+
+    while (*p && pos + 1 < cap) {
+        if (p[0] == '{' && !strncmp(p, "{dir}", 5)) {
+            pos += (size_t)snprintf(out + pos, cap - pos, "%s", dirs);
+            p += 5;
+            continue;
+        }
+        if (p[0] == '{' && !strncmp(p, "{time}", 6)) {
+            time_t now = time(NULL);
+            struct tm tm_now;
+            char stamp[16];
+#ifdef _WIN32
+            localtime_s(&tm_now, &now);
+#else
+            localtime_r(&now, &tm_now);
+#endif
+            strftime(stamp, sizeof(stamp), "%H:%M:%S", &tm_now);
+            pos += (size_t)snprintf(out + pos, cap - pos, "%s", stamp);
+            p += 6;
+        } else {
+            out[pos++] = *p++;
+        }
+    }
+    out[pos < cap ? pos : cap - 1] = '\0';
+}
+
+/* 用户日志：每行加前缀，按 \n 分段的流式写入 */
+static void sess_log_write(nd_conn *c, int dir, const unsigned char *data, size_t len)
+{
+    size_t i = 0;
+
+    if (!c || !c->sess_log || !len)
+        return;
+    nd_mutex_lock(&c->log_lock);
+    while (i < len) {
+        size_t j = i;
+        while (j < len && data[j] != '\n')
+            j++;
+        if (c->sess_bol) {
+            char pfx[160];
+            sess_log_prefix(pfx, sizeof(pfx), c->sess_prefix, dir);
+            if (pfx[0])
+                fwrite(pfx, 1, strlen(pfx), c->sess_log);
+            c->sess_bol = 0;
+        }
+        if (j > i)
+            fwrite(data + i, 1, j - i, c->sess_log);
+        if (j < len) {
+            fputc('\n', c->sess_log);
+            c->sess_bol = 1;
+        }
+        i = j + 1;
+    }
+    fflush(c->sess_log);
+    nd_mutex_unlock(&c->log_lock);
+}
+
+int nd_conn_log_start(nd_conn *c, const char *prefix, char *path, size_t cap)
+{
+    char dir[512];
+    char name[600];
+    time_t now = time(NULL);
+    struct tm tm_now;
+
+    if (!c)
+        return -1;
+    nd_conn_log_stop(c);
+#ifdef _WIN32
+    localtime_s(&tm_now, &now);
+#else
+    localtime_r(&now, &tm_now);
+#endif
+    snprintf(dir, sizeof(dir), "%slogs", nd_config_dir());
+    nd_mkdir_p(dir);
+    snprintf(name, sizeof(name), "%s/session-%llu-%04d%02d%02d-%02d%02d%02d.log", dir,
+             (unsigned long long)c->id, tm_now.tm_year + 1900, tm_now.tm_mon + 1,
+             tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+
+    nd_mutex_lock(&c->log_lock);
+    c->sess_log = fopen(name, "ab");
+    if (!c->sess_log) {
+        nd_mutex_unlock(&c->log_lock);
+        return -1;
+    }
+    nd_strlcpy(c->sess_prefix, prefix ? prefix : "", sizeof(c->sess_prefix));
+    c->sess_bol = 1;
+    nd_mutex_unlock(&c->log_lock);
+    if (path && cap)
+        nd_strlcpy(path, name, cap);
+    return 0;
+}
+
+void nd_conn_log_stop(nd_conn *c)
+{
+    if (!c)
+        return;
+    nd_mutex_lock(&c->log_lock);
+    if (c->sess_log) {
+        fflush(c->sess_log);
+        fclose(c->sess_log);
+        c->sess_log = NULL;
+    }
+    nd_mutex_unlock(&c->log_lock);
+}
+
 void nd_conn_note_rx(nd_conn *c, const void *data, size_t n, const nd_addr *peer)
 {
     if (!c || n == 0)
@@ -133,6 +249,7 @@ void nd_conn_note_rx(nd_conn *c, const void *data, size_t n, const nd_addr *peer
     c->rx_bytes += (uint64_t)n;
     c->last_rx_ms = nd_monotonic_ms();
     nd_ws_broadcast_data(c->id, 0, data, n);
+    sess_log_write(c, 0, (const unsigned char *)data, n);
     conn_log_write(c, 0, (const unsigned char *)data, n);
     if (c->echo)
         nd_conn_send(c, data, n);
@@ -143,30 +260,74 @@ static void *conn_rx_thread(void *arg)
     nd_conn *c = (nd_conn *)arg;
     unsigned char buf[65536];
     unsigned char clean[65536];
+    /* 攒批：串口一字节一次读、网卡小包都会让每读一次就发一个 WS 帧，
+     * 帧太碎时浏览器侧每秒要处理上千个消息。攒到 4KB 或空闲时再发。 */
+    unsigned char *batch = NULL;
+    size_t blen = 0;
+    uint64_t last_data_ms = 0, last_flush_ms = 0;
+
+    /* SSH 认证完成前不要读：那时还没有 channel */
+    while (!atomic_load(&c->rx_ready) && !atomic_load(&c->closing))
+        nd_sleep_ms(20);
 
     while (!atomic_load(&c->closing)) {
         int n;
+        /* 攒着数据时用短超时轮询，保证最后一批尽快发出去；空闲时睡久一点 */
+        int rto = blen ? 10 : 0;
         if (c->ssh)
             n = nd_ssh_read((nd_ssh *)c->ssh, buf, sizeof(buf));
         else if (c->serial)
-            n = nd_serial_read(c->serial, buf, sizeof(buf), 500);
+            n = nd_serial_read(c->serial, buf, sizeof(buf), rto ? rto : 500);
         else
-            n = nd_net_recv_some(c->fd, buf, sizeof(buf), 1000);
+            n = nd_net_recv_some(c->fd, buf, sizeof(buf), rto ? rto : 1000);
         if (n > 0) {
+            uint64_t now = nd_monotonic_ms();
             if (c->telnet) {
                 size_t outn = nd_telnet_feed((nd_telnet *)c->telnet, c, buf, (size_t)n,
                                              clean, sizeof(clean));
                 if (outn)
                     nd_conn_note_rx(c, clean, outn, NULL);
-            } else {
-                nd_conn_note_rx(c, buf, (size_t)n, NULL);
+                continue;
+            }
+            if (!batch) {
+                batch = (unsigned char *)malloc(65536);
+                if (!batch) {
+                    nd_conn_note_rx(c, buf, (size_t)n, NULL);
+                    continue;
+                }
+            }
+            if (blen + (size_t)n > 65536) {
+                nd_conn_note_rx(c, batch, blen, NULL);
+                blen = 0;
+                last_flush_ms = now;
+            }
+            memcpy(batch + blen, buf, (size_t)n);
+            blen += (size_t)n;
+
+            /* 连续来了（间隔 < 20ms）就继续攒；否则立刻发，保证交互延迟 */
+            if (blen >= 4096 || !last_data_ms || now - last_data_ms >= 20 ||
+                now - last_flush_ms >= 10) {
+                nd_conn_note_rx(c, batch, blen, NULL);
+                blen = 0;
+                last_flush_ms = now;
+            }
+            last_data_ms = now;
+            continue;
+        }
+        if (n == -2) {
+            if (blen) {
+                nd_conn_note_rx(c, batch, blen, NULL);
+                blen = 0;
+                last_flush_ms = nd_monotonic_ms();
             }
             continue;
         }
-        if (n == -2)
-            continue;
         break;
     }
+
+    if (blen)
+        nd_conn_note_rx(c, batch, blen, NULL);
+    free(batch);
 
     conn_teardown(c);
     nd_conn_put(c); /* 线程自持引用 */
@@ -197,6 +358,7 @@ nd_conn *nd_conn_new(int fd, const nd_addr *peer, const nd_addr *local,
     atomic_init(&c->refs, 1);
     atomic_init(&c->closing, 0);
     atomic_init(&c->closed, 0);
+    atomic_init(&c->rx_ready, 1);
     nd_mutex_init(&c->send_lock);
     nd_mutex_init(&c->log_lock);
 
@@ -231,6 +393,27 @@ int nd_conn_start(nd_conn *c)
     return 0;
 }
 
+void nd_conn_set_rx_ready(nd_conn *c, int on)
+{
+    if (c)
+        atomic_store(&c->rx_ready, on ? 1 : 0);
+}
+
+void nd_conn_emit(nd_conn *c, int dir, const void *data, size_t n)
+{
+    if (!c || !data || !n || atomic_load(&c->closing))
+        return;
+    if (dir) {
+        c->tx_bytes += (uint64_t)n;
+    } else {
+        c->rx_bytes += (uint64_t)n;
+        c->last_rx_ms = nd_monotonic_ms();
+    }
+    nd_ws_broadcast_data(c->id, dir, data, (size_t)n);
+    sess_log_write(c, dir, (const unsigned char *)data, (size_t)n);
+    conn_log_write(c, dir, (const unsigned char *)data, (size_t)n);
+}
+
 int nd_conn_send(nd_conn *c, const void *data, size_t len)
 {
     int rc;
@@ -256,6 +439,7 @@ int nd_conn_send(nd_conn *c, const void *data, size_t len)
         return -1;
     c->tx_bytes += len;
     nd_ws_broadcast_data(c->id, 1, data, len);
+    sess_log_write(c, 1, (const unsigned char *)data, len);
     conn_log_write(c, 1, (const unsigned char *)data, len);
     return 0;
 }

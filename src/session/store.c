@@ -40,6 +40,8 @@ void nd_store_save_services(void)
         cJSON_AddBoolToObject(o, "autostart", nd_service_running(s));
         cJSON_AddItemToObject(o, "bind", nd_bind_to_json(&s->bind));
         cJSON_AddNumberToObject(o, "max_conns", (double)s->max_conns);
+        if (!strcmp(s->proto, "syslog") && s->has_bind2)
+            cJSON_AddItemToObject(o, "bind2", nd_bind_to_json(&s->bind2));
         if (!strcmp(s->proto, "ftp")) {
             cJSON *op = cJSON_CreateObject();
             cJSON_AddStringToObject(op, "root", s->ftp_root);
@@ -179,6 +181,18 @@ void nd_store_load_services(void)
                 if (x && cJSON_IsString(x) && x->valuestring[0])
                     nd_strlcpy(s->http_root, x->valuestring, sizeof(s->http_root));
             }
+            if (s && !strcmp(proto, "syslog")) {
+                cJSON *b2 = cJSON_GetObjectItemCaseSensitive(item, "bind2");
+                if (b2 && cJSON_IsObject(b2)) {
+                    nd_bind_spec nb2;
+                    char b2err[256] = "";
+                    if (nd_bind_from_json(b2, &nb2, b2err, sizeof(b2err)) == ND_OK) {
+                        nb2.type = SOCK_STREAM;
+                        s->bind2 = nb2;
+                        s->has_bind2 = 1;
+                    }
+                }
+            }
             /* 上次退出时在运行的服务，恢复后自动重新监听 */
             if (s) {
                 cJSON *as = cJSON_GetObjectItemCaseSensitive(item, "autostart");
@@ -194,4 +208,61 @@ void nd_store_load_services(void)
     }
     cJSON_Delete(arr);
     ND_LOGI("services restored from %s", path);
+}
+
+size_t nd_presets_list(char out[][ND_PRESET_LEN], size_t cap)
+{
+    char path[600];
+    void *data = NULL;
+    size_t len = 0, n = 0;
+    cJSON *arr;
+    const cJSON *item;
+
+    store_path(path, sizeof(path), "presets.json");
+    if (nd_read_file(path, &data, &len) != 0)
+        return 0;
+    arr = cJSON_Parse((const char *)data);
+    free(data);
+    if (!arr)
+        return 0;
+    if (cJSON_IsArray(arr)) {
+        cJSON_ArrayForEach(item, arr) {
+            if (n >= cap)
+                break;
+            if (cJSON_IsString(item) && item->valuestring[0]) {
+                nd_strlcpy(out[n], item->valuestring, ND_PRESET_LEN);
+                n++;
+            }
+        }
+    }
+    cJSON_Delete(arr);
+    return n;
+}
+
+int nd_presets_save(const char *const *items, size_t n)
+{
+    char path[600], tmp[620];
+    char *text;
+    cJSON *arr = cJSON_CreateArray();
+
+    if (!arr)
+        return -1;
+    for (size_t i = 0; i < n; i++)
+        cJSON_AddItemToArray(arr, cJSON_CreateString(items[i]));
+    text = cJSON_Print(arr);
+    cJSON_Delete(arr);
+    if (!text)
+        return -1;
+
+    store_path(path, sizeof(path), "presets.json");
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (nd_write_file(tmp, text, strlen(text)) == 0) {
+        remove(path);
+        rename(tmp, path);
+        free(text);
+        return 0;
+    }
+    ND_LOGW("cannot write %s", path);
+    free(text);
+    return -1;
 }

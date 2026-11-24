@@ -14,6 +14,7 @@
 #include "proto/ftp_client.h"
 #include "proto/http_client.h"
 #include "proto/tftp_client.h"
+#include "proto/syslog_server.h"
 #include "proto/smb2_client.h"
 #include "session/conn.h"
 #include "session/smb.h"
@@ -41,9 +42,12 @@ static int json_int(cJSON *o, const char *key, int def)
     return (v && cJSON_IsNumber(v)) ? v->valueint : def;
 }
 
-static void add_slots(cJSON *o, const nd_plan *p)
+static void add_slots(cJSON *o, const nd_plan *p, const char *transport)
 {
-    cJSON *arr = cJSON_AddArrayToObject(o, "slots");
+    /* 已有 slots 数组就追加（syslog 双监听：UDP 主 + TCP 副） */
+    cJSON *arr = cJSON_GetObjectItemCaseSensitive(o, "slots");
+    if (!cJSON_IsArray(arr))
+        arr = cJSON_AddArrayToObject(o, "slots");
     for (size_t i = 0; i < p->n; i++) {
         char a[96];
         char hint[256];
@@ -57,6 +61,7 @@ static void add_slots(cJSON *o, const nd_plan *p)
             snprintf(hint, sizeof(hint), "%s", nd_error_str(p->slot[i].err));
         }
         cJSON_AddStringToObject(s, "addr", a);
+        cJSON_AddStringToObject(s, "transport", transport ? transport : "tcp");
         cJSON_AddBoolToObject(s, "ok", p->slot[i].fd >= 0);
         cJSON_AddNumberToObject(s, "code", p->slot[i].err);
         cJSON_AddNumberToObject(s, "sys_errno", p->slot[i].sys_errno);
@@ -82,6 +87,11 @@ static cJSON *service_json(nd_service *s)
         cJSON_AddNumberToObject(o, "conns", (double)nd_service_conn_count(s));
     cJSON_AddNumberToObject(o, "requests", (double)atomic_load(&s->http_requests));
     cJSON_AddNumberToObject(o, "peak", (double)atomic_load(&s->peak_conns));
+    if (!strcmp(s->proto, "syslog")) {
+        cJSON_AddNumberToObject(o, "syslog_msgs", (double)atomic_load(&s->syslog_msgs));
+        if (s->has_bind2)
+            cJSON_AddItemToObject(o, "bind2", nd_bind_to_json(&s->bind2));
+    }
     {
         uint64_t started = atomic_load(&s->started_ms);
         uint64_t up = (started && nd_service_running(s)) ? (nd_monotonic_ms() - started) : 0;
@@ -119,7 +129,9 @@ static cJSON *service_json(nd_service *s)
     if (s->last_error[0])
         cJSON_AddStringToObject(o, "last_error", s->last_error);
     if (s->plan.n)
-        add_slots(o, &s->plan);
+        add_slots(o, &s->plan, s->bind.type == SOCK_DGRAM ? "udp" : "tcp");
+    if (s->plan2.n)
+        add_slots(o, &s->plan2, "tcp");
     return o;
 }
 
@@ -1004,7 +1016,7 @@ static void test_bind(int fd, nd_http_req *req)
     cJSON_AddNumberToObject(o, "code", rc);
     if (rc != ND_OK)
         cJSON_AddStringToObject(o, "message", nd_error_str(rc));
-    add_slots(o, &plan);
+    add_slots(o, &plan, plan.spec.type == SOCK_DGRAM ? "udp" : "tcp");
     nd_plan_close(&plan);
     nd_http_json(fd, 200, o); /* 测试成功执行；能否绑定看 ok 字段 */
     cJSON_Delete(o);
@@ -1077,6 +1089,45 @@ int nd_api_handle(void *vreq)
         nd_http_json(req->fd, 200, arr);
         cJSON_Delete(arr);
         return 1;
+    }
+
+    if (!strcmp(req->path, "/api/presets")) {
+        if (is_get) {
+            char list[ND_MAX_PRESETS][ND_PRESET_LEN];
+            size_t n = nd_presets_list(list, ND_MAX_PRESETS);
+            cJSON *arr = cJSON_CreateArray();
+            for (size_t i = 0; i < n; i++)
+                cJSON_AddItemToArray(arr, cJSON_CreateString(list[i]));
+            nd_http_json(req->fd, 200, arr);
+            cJSON_Delete(arr);
+            return 1;
+        }
+        if (is_put || is_post) {
+            cJSON *body = cJSON_Parse(req->body ? req->body : "");
+            cJSON *arr = body ? cJSON_GetObjectItemCaseSensitive(body, "presets") : NULL;
+            const char *items[ND_MAX_PRESETS];
+            size_t n = 0;
+            int rc;
+            if (arr && cJSON_IsArray(arr)) {
+                const cJSON *it;
+                cJSON_ArrayForEach(it, arr) {
+                    if (n >= ND_MAX_PRESETS)
+                        break;
+                    if (cJSON_IsString(it) && it->valuestring[0])
+                        items[n++] = it->valuestring;
+                }
+            }
+            rc = nd_presets_save(items, n);
+            cJSON_Delete(body);
+            {
+                cJSON *o = cJSON_CreateObject();
+                cJSON_AddBoolToObject(o, "ok", rc == 0);
+                cJSON_AddNumberToObject(o, "count", (double)n);
+                nd_http_json(req->fd, rc == 0 ? 200 : 500, o);
+                cJSON_Delete(o);
+            }
+            return 1;
+        }
     }
 
     if (!strncmp(req->path, "/api/ftp", 8) &&
@@ -1229,6 +1280,21 @@ int nd_api_handle(void *vreq)
         return 1;
     }
 
+    if (!strcmp(req->path, "/api/system/pick-file") && is_post) {
+        char file[600];
+        int rc = nd_pick_file(file, sizeof(file));
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddBoolToObject(o, "ok", rc == 1);
+        if (rc == 1)
+            cJSON_AddStringToObject(o, "path", file);
+        else
+            cJSON_AddStringToObject(o, "message",
+                                    rc == 0 ? "已取消" : "当前系统不支持文件选择");
+        nd_http_json(req->fd, 200, o);
+        cJSON_Delete(o);
+        return 1;
+    }
+
     if (!strcmp(req->path, "/api/services")) {
         if (is_get) {
             uint64_t ids[256];
@@ -1274,17 +1340,31 @@ int nd_api_handle(void *vreq)
             if (strcmp(proto, "raw-tcp") != 0 && strcmp(proto, "raw-udp") != 0 &&
                 strcmp(proto, "telnet") != 0 && strcmp(proto, "ftp") != 0 &&
                 strcmp(proto, "tftp") != 0 && strcmp(proto, "http") != 0 &&
-                strcmp(proto, "speedtest") != 0) {
+                strcmp(proto, "speedtest") != 0 && strcmp(proto, "syslog") != 0) {
                 cJSON_Delete(body);
                 nd_http_error_json(req->fd, 400, ND_E_PARAM,
-                                   "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest 服务");
+                                   "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest / syslog 服务");
                 return 1;
             }
-            if (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp"))
+            if (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp") ||
+                !strcmp(proto, "syslog"))
                 b.type = SOCK_DGRAM;
             else
                 b.type = SOCK_STREAM;
             s = nd_service_new(name, proto, &b, echo);
+            if (s && !strcmp(proto, "syslog")) {
+                /* syslog 副绑定：TCP（RFC 6587），可选 */
+                cJSON *b2 = cJSON_GetObjectItemCaseSensitive(body, "bind2");
+                if (b2 && cJSON_IsObject(b2)) {
+                    nd_bind_spec nb2;
+                    char b2err[256] = "";
+                    if (nd_bind_from_json(b2, &nb2, b2err, sizeof(b2err)) == ND_OK) {
+                        nb2.type = SOCK_STREAM;
+                        s->bind2 = nb2;
+                        s->has_bind2 = 1;
+                    }
+                }
+            }
             if (s && !strcmp(proto, "tftp")) {
                 cJSON *op = cJSON_GetObjectItemCaseSensitive(body, "options");
                 cJSON *v;
@@ -1380,14 +1460,15 @@ int nd_api_handle(void *vreq)
                 if (strcmp(proto, "raw-tcp") != 0 && strcmp(proto, "raw-udp") != 0 &&
                     strcmp(proto, "telnet") != 0 && strcmp(proto, "ftp") != 0 &&
                     strcmp(proto, "tftp") != 0 && strcmp(proto, "http") != 0 &&
-                    strcmp(proto, "speedtest") != 0) {
+                    strcmp(proto, "speedtest") != 0 && strcmp(proto, "syslog") != 0) {
                     cJSON_Delete(jb);
                     nd_http_error_json(req->fd, 400, ND_E_PARAM,
-                                       "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest 服务");
+                                       "当前版本支持 raw-tcp / raw-udp / telnet / ftp / tftp / http / speedtest / syslog 服务");
                     nd_service_put(s);
                     return 1;
                 }
-                nb.type = (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp"))
+                nb.type = (!strcmp(proto, "raw-udp") || !strcmp(proto, "tftp") ||
+                           !strcmp(proto, "syslog"))
                               ? SOCK_DGRAM : SOCK_STREAM;
                 echo = json_int(jb, "echo", s->echo);
                 {
@@ -1402,6 +1483,20 @@ int nd_api_handle(void *vreq)
                 nd_strlcpy(s->proto, proto, sizeof(s->proto));
                 s->bind = nb;
                 s->echo = echo;
+                s->has_bind2 = 0;
+                memset(&s->bind2, 0, sizeof(s->bind2));
+                if (!strcmp(proto, "syslog")) {
+                    cJSON *b2 = cJSON_GetObjectItemCaseSensitive(jb, "bind2");
+                    if (b2 && cJSON_IsObject(b2)) {
+                        nd_bind_spec nb2;
+                        char b2err[256] = "";
+                        if (nd_bind_from_json(b2, &nb2, b2err, sizeof(b2err)) == ND_OK) {
+                            nb2.type = SOCK_STREAM;
+                            s->bind2 = nb2;
+                            s->has_bind2 = 1;
+                        }
+                    }
+                }
                 {
                     cJSON *op = cJSON_GetObjectItemCaseSensitive(jb, "options");
                     if (op && cJSON_IsObject(op)) {
@@ -1458,7 +1553,7 @@ int nd_api_handle(void *vreq)
                     cJSON_AddStringToObject(o, "message", nd_error_str(rc));
                     cJSON_AddStringToObject(o, "detail", err);
                     if (s->plan.n)
-                        add_slots(o, &s->plan);
+                        add_slots(o, &s->plan, s->bind.type == SOCK_DGRAM ? "udp" : "tcp");
                     nd_http_json(req->fd, 409, o);
                     cJSON_Delete(o);
                 } else {
@@ -1479,6 +1574,55 @@ int nd_api_handle(void *vreq)
                     cJSON_AddBoolToObject(o, "ok", 1);
                     nd_http_json(req->fd, 200, o);
                     cJSON_Delete(o);
+                }
+                nd_service_put(s);
+                return 1;
+            }
+            /* syslog 最近消息：GET 回放 / DELETE 清空 */
+            if (!strcmp(rest, "/syslog") && (is_get || is_delete)) {
+                if (!strcmp(s->proto, "syslog")) {
+                    if (is_get) {
+                        nd_syslog_rec *recs =
+                            (nd_syslog_rec *)malloc(ND_SYSLOG_RING * sizeof(*recs));
+                        size_t n;
+                        cJSON *arr;
+                        if (!recs) {
+                            nd_http_error_json(req->fd, 500, ND_E_INTERNAL, "out of memory");
+                            nd_service_put(s);
+                            return 1;
+                        }
+                        n = nd_service_syslog_snapshot(s, recs, ND_SYSLOG_RING, 0);
+                        arr = cJSON_CreateArray();
+                        for (size_t i = 0; i < n; i++) {
+                            cJSON *o = cJSON_CreateObject();
+                            cJSON_AddNumberToObject(o, "ts", (double)recs[i].ts);
+                            cJSON_AddNumberToObject(o, "sev", recs[i].sev);
+                            cJSON_AddNumberToObject(o, "fac", recs[i].fac);
+                            cJSON_AddStringToObject(o, "sev_name",
+                                                    nd_syslog_severity_name(recs[i].sev));
+                            cJSON_AddStringToObject(o, "fac_name",
+                                                    nd_syslog_facility_name(recs[i].fac));
+                            cJSON_AddStringToObject(o, "host", recs[i].host);
+                            cJSON_AddStringToObject(o, "tag", recs[i].tag);
+                            cJSON_AddStringToObject(o, "peer", recs[i].peer);
+                            cJSON_AddStringToObject(o, "text", recs[i].text);
+                            cJSON_AddStringToObject(o, "body", recs[i].body);
+                            cJSON_AddItemToArray(arr, o);
+                        }
+                        nd_http_json(req->fd, 200, arr);
+                        cJSON_Delete(arr);
+                        free(recs);
+                    } else {
+                        nd_service_syslog_clear(s);
+                        {
+                            cJSON *o = cJSON_CreateObject();
+                            cJSON_AddBoolToObject(o, "ok", 1);
+                            nd_http_json(req->fd, 200, o);
+                            cJSON_Delete(o);
+                        }
+                    }
+                } else {
+                    nd_http_error_json(req->fd, 400, ND_E_PARAM, "该服务不是 syslog");
                 }
                 nd_service_put(s);
                 return 1;
@@ -1531,6 +1675,34 @@ int nd_api_handle(void *vreq)
                 nd_http_error_json(req->fd, 404, ND_E_PARAM, "conn not found");
                 return 1;
             }
+            if (!strcmp(rest, "/log") && is_post) {
+                cJSON *body = cJSON_Parse(req->body ? req->body : "");
+                cJSON *on = body ? cJSON_GetObjectItemCaseSensitive(body, "on") : NULL;
+                cJSON *pfx = body ? cJSON_GetObjectItemCaseSensitive(body, "prefix") : NULL;
+                int want = on && cJSON_IsBool(on) && cJSON_IsTrue(on);
+                cJSON *o = cJSON_CreateObject();
+                if (!want) {
+                    nd_conn_log_stop(c);
+                    cJSON_AddBoolToObject(o, "ok", 1);
+                    cJSON_AddStringToObject(o, "path", "");
+                } else {
+                    char path[600];
+                    const char *prefix = (pfx && cJSON_IsString(pfx)) ? pfx->valuestring : "";
+                    if (nd_conn_log_start(c, prefix, path, sizeof(path)) == 0) {
+                        cJSON_AddBoolToObject(o, "ok", 1);
+                        cJSON_AddStringToObject(o, "path", path);
+                    } else {
+                        cJSON_AddBoolToObject(o, "ok", 0);
+                        cJSON_AddStringToObject(o, "message", "无法创建日志文件");
+                    }
+                }
+                cJSON_Delete(body);
+                nd_http_json(req->fd, 200, o);
+                cJSON_Delete(o);
+                nd_conn_put(c);
+                return 1;
+            }
+
             if (!strcmp(rest, "/send") && is_post) {
                 cJSON *body = cJSON_Parse(req->body ? req->body : "");
                 const char *data = json_str(body, "data", "");

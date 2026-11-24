@@ -39,6 +39,7 @@
     activeTab: null,
     tabSeq: 1,
     recent: {},
+    presets: [],
   };
 
   const paintTimers = new Map();
@@ -51,6 +52,7 @@
     tftp: 'TFTP 传输服务',
     http: 'HTTP 文件服务',
     speedtest: 'LibreSpeed 测速',
+    syslog: 'Syslog 服务器',
   };
 
   /* 各协议的默认端口：取「常用端口 +1000」这类非特权端口，
@@ -64,7 +66,10 @@
     tftp: 6969,
     http: 8080,
     speedtest: 8081,
+    syslog: 1514,
   };
+  /* syslog TCP（RFC 6587）副监听的基础端口 */
+  const SYSLOG_TCP_PORT = 6514;
   const PORT_SPREAD = 100;
 
   /* 协议在界面上显示的名字 */
@@ -76,6 +81,7 @@
     tftp: 'TFTP',
     http: 'HTTP',
     speedtest: '测速',
+    syslog: 'Syslog',
   };
 
   /* 终端顶部展示用的协议名（后端返回的是内部标识） */
@@ -90,6 +96,7 @@
     ssh: 'SSH',
     serial: '串口',
     http: 'HTTP',
+    syslog: 'Syslog',
   };
 
   const h = (s) =>
@@ -155,13 +162,29 @@
     return `${kind} · ${fam}`;
   }
 
+  /* 服务卡片渲染指纹：卡片依赖的字段没变就跳过 DOM 重建，
+   * 轮询时绝大多数 tick 都不会有变化（uptime_ms 等易变字段不计入） */
+  let servicesSig = '';
   function renderServices() {
     const protoNames = PROTO_NAMES;
     const root = $('#service-list');
     if (!state.services.length) {
-      root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有监听服务</div>';
+      if (servicesSig !== 'EMPTY') {
+        root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有监听服务</div>';
+        servicesSig = 'EMPTY';
+      }
       return;
     }
+    const sig = state.services
+      .map((s) =>
+        [s.id, s.name, s.proto, s.running, s.conns, s.requests,
+         s.bind && s.bind.port, s.bind && s.bind.kind,
+         s.bind2 && s.bind2.port,
+         (s.slots || []).filter((x) => x.ok).map((x) => x.addr).join('|')].join('\u00a7')
+      )
+      .join('\u00b6');
+    if (sig === servicesSig) return;
+    servicesSig = sig;
     root.innerHTML = state.services
       .map((s) => {
         const addrs = (s.slots || [])
@@ -208,7 +231,13 @@
         if (s) renderConns(s.id);
       }
       const active = tabById(state.activeTab);
-      if (active && (active.kind === 'svc' || active.kind === 'log')) schedulePaint(active);
+      if (active && active.kind === 'log') schedulePaint(active);
+      else if (active && active.kind === 'svc') {
+        const svc = state.services.find((s) => s.id === active.svcId);
+        /* syslog 详情页只更新顶栏状态，日志区由消息流自己增量刷新 */
+        if (svc && svc.proto === 'syslog') paintSvcHeader(active);
+        else schedulePaint(active);
+      }
     } catch (e) {
       $('#status-line').textContent = '后端连接失败';
     }
@@ -220,12 +249,31 @@
     return { idle: '未连接', connecting: '连接中', open: '已连接', error: '失败' }[st] || st;
   }
 
+  /* 某个连接对应的终端标签（没有则返回 undefined） */
+  function termTabForConn(connId) {
+    if (!connId) return undefined;
+    return state.tabs.find((t) => t.kind === 'term' && t.connId === connId);
+  }
+
+  let sessionsSig = '';
   function renderSessions() {
     const root = $('#session-list');
     if (!state.sessions.length) {
-      root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有客户端会话</div>';
+      if (sessionsSig !== 'EMPTY') {
+        root.innerHTML = '<div class="muted" style="padding:6px 10px;font-size:12px">还没有客户端会话</div>';
+        sessionsSig = 'EMPTY';
+      }
       return;
     }
+    const sig = state.sessions
+      .map((s) =>
+        [s.id, s.name, s.state, s.transport, s.serial_port, s.baud,
+         s.user, s.host, s.port, s.protocol, s.family, s.conn_id,
+         !!termTabForConn(s.conn_id)].join('\u00a7')
+      )
+      .join('\u00b6');
+    if (sig === sessionsSig) return;
+    sessionsSig = sig;
     root.innerHTML = state.sessions
       .map(
         (s) => `<div class="sess" data-sess="${s.id}">
@@ -241,7 +289,9 @@
                 : `${s.protocol === 'telnet' ? 'telnet' : (s.transport || 'tcp')} · ${s.host}:${s.port} · ${s.family}`
           )}</div>
           <div class="svc-actions">
-            <button class="mini-btn" data-sact="open" data-id="${s.id}">${s.state === 'open' ? '打开终端' : '连接'}</button>
+            <button class="mini-btn" data-sact="open" data-id="${s.id}">${h(
+              termTabForConn(s.conn_id) ? '切到终端' : s.state === 'open' ? '打开终端' : '连接'
+            )}</button>
             ${s.state === 'open' ? `<button class="mini-btn" data-sact="disconnect" data-id="${s.id}">断开</button>` : ''}
             <button class="mini-btn danger" data-sact="del" data-id="${s.id}">删除</button>
           </div>
@@ -261,12 +311,12 @@
     const s = state.sessions.find((x) => x.id === id);
     if (!s) return;
     if (s.state === 'open' && s.conn_id) {
-      connectTerminal(s.conn_id);
+      connectTerminal(s.conn_id, id);
       return;
     }
     try {
       const r = await api(`/api/sessions/${id}/connect`, { method: 'POST' });
-      connectTerminal(r.conn_id);
+      connectTerminal(r.conn_id, id);
       await refreshSessions();
     } catch (e) {
       toast(errText(e));
@@ -292,17 +342,24 @@
 
   async function fillSerialPorts() {
     const sel = $('#s-serial-port');
+    const hint = $('#s-serial-hint');
     try {
       const ports = await api('/api/serial/ports');
       if (!ports.length) {
-        sel.innerHTML = '<option value="">未发现串口（检查驱动或权限）</option>';
+        sel.innerHTML = '<option value="">未检测到串口</option>';
+        sel.disabled = true;
+        hint.textContent = '本机没有已注册的串口设备。USB 转串口需要先装驱动（设备管理器里出现「端口 (COM 和 LPT)」后点「刷新」）。';
         return;
       }
+      sel.disabled = false;
+      hint.textContent = '';
       sel.innerHTML = ports
         .map((p) => `<option value="${h(p.port)}">${h(p.port)} — ${h(p.desc)}</option>`)
         .join('');
     } catch (e) {
       sel.innerHTML = '<option value="">读取串口列表失败</option>';
+      sel.disabled = true;
+      hint.textContent = `读取串口列表失败：${errText(e)}`;
     }
   }
 
@@ -368,14 +425,22 @@
     syncModeTiles();
   }
 
+  /* 对话框内的校验错误显示在按钮行左侧，不弹角落 toast */
+  function formError(text) {
+    const el = $('#s-error');
+    if (el) el.textContent = text || '';
+  }
+
   async function createSession() {
     const transport = $('#s-transport').value;
     let body;
+    formError('');
 
     if (transport === 'ssh') {
       const host = $('#s-host').value.trim();
       if (!host) {
-        toast('主机不能为空');
+        formError('主机不能为空');
+        $('#s-host').focus();
         return;
       }
       body = {
@@ -393,7 +458,8 @@
     } else if (transport === 'serial') {
       const port = $('#s-serial-port').value;
       if (!port) {
-        toast('没有可用串口');
+        formError('没有可用串口：先插上设备并装好驱动，再点「刷新」');
+        $('#s-serial-hint').scrollIntoView({ block: 'center' });
         return;
       }
       body = {
@@ -412,7 +478,8 @@
     } else {
       const host = $('#s-host').value.trim();
       if (!host) {
-        toast('目标地址不能为空');
+        formError('目标地址不能为空');
+        $('#s-host').focus();
         return;
       }
       body = {
@@ -524,6 +591,8 @@
 
   function renderTabs() {
     const root = $('#tabs');
+    /* 会话卡片的按钮文字取决于「终端是否已打开」，标签变化时一并刷新 */
+    if (typeof renderSessions === 'function' && state.sessions.length) renderSessions();
     if (!state.tabs.length) {
       root.innerHTML = '';
       return;
@@ -561,6 +630,7 @@
     if (tab.kind === 'term') {
       paintTerminal(tab);
       ensureTermSocket(tab);
+      applyTermView(tab);
       const out = $('#term-out');
       out.scrollTop = out.scrollHeight;
     } else if (tab.kind === 'ftp') {
@@ -598,6 +668,7 @@
       tab.peer = '';
       tab.local = '';
       tab.ws = null;
+      tab.view = 'term'; /* term = xterm 终端仿真，log = 日志视图 */
     }
     if (tab.kind === 'log') tab.rows = [];
     state.tabs.push(tab);
@@ -613,6 +684,7 @@
       try { tab.ws.close(); } catch (e) {}
       tab.ws = null;
     }
+    if (tab.kind === 'term') disposeXterm(tab);
     state.tabs.splice(idx, 1);
     if (state.activeTab === id) {
       const next = state.tabs[idx] || state.tabs[idx - 1];
@@ -656,6 +728,8 @@
   }
 
   function logRowHtml(r) {
+    if (r.kind === 'syslog')
+      return syslogRowHtml({ ...r, sev_name: r.sevName || '?' });
     const open = r.state === 'open';
     return `<div class="log-row ${open ? 'open' : 'closed'}">
       <span class="log-time">${fmtClock(r.ts)}</span>
@@ -688,10 +762,51 @@
     if (!tabs.length) return;
     for (const tab of tabs) {
       if (tab.kind === 'svc') {
+        /* 详情页的 syslog 流：暂停时不重绘，但继续收进缓冲区 */
+        if (m.t === 'syslog_msg' && tab.svcId === m.svc) {
+          if (!tab.syslog) tab.syslog = [];
+          tab.syslogSeq = (tab.syslogSeq || 0) + 1;
+          tab.syslog.push({
+            seq: tab.syslogSeq,
+            ts: m.ts,
+            sev: m.sev,
+            fac: m.fac,
+            sev_name: m.sev_name,
+            fac_name: m.fac_name,
+            host: m.host,
+            tag: m.tag,
+            peer: m.peer,
+            text: m.text,
+            body: m.body,
+          });
+          if (tab.syslog.length > 500) tab.syslog.shift();
+          if (!tab.syslogMarks) tab.syslogMarks = [];
+          tab.syslogMarks.push(Date.now());
+          if (tab.syslogMarks.length > 400) tab.syslogMarks.splice(0, 200);
+          if (state.activeTab === tab.id && !tab.syslogPaused) paintSvcSyslogSoon(tab);
+          continue;
+        }
         schedulePaint(tab);
         continue;
       }
       if (!tab.rows) tab.rows = [];
+      /* syslog：一条消息就是一行记录 */
+      if (m.t === 'syslog_msg') {
+        tab.rows.push({
+          kind: 'syslog',
+          key: `s${m.ts}`,
+          ts: m.ts,
+          peer: m.peer,
+          sev: m.sev,
+          sevName: m.sev_name,
+          facName: m.fac_name,
+          text: m.text,
+          state: 'closed',
+        });
+        if (tab.rows.length > 500) tab.rows.shift();
+        schedulePaint(tab);
+        continue;
+      }
       const isStart = m.t === 'req_start' || m.t === 'conn_open';
       const key = m.t === 'req_start' || m.t === 'req_end' ? `r${m.seq}` : `c${m.conn}`;
       if (isStart) {
@@ -763,9 +878,160 @@
     return `${s}s`;
   }
 
+  /* ---------- syslog 日志查看器（详情页整页模式） ---------- */
+
+  /* 活动日志标签页里的一行 */
+  function syslogRowHtml(r) {
+    const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
+    return `<div class="log-row syslog sev-${sev}">
+      <span class="log-time">${fmtClock(r.ts)}</span>
+      <span class="log-sev">${h(r.sev_name || '?')}</span>
+      <span class="log-peer">${h(r.peer || '-')}</span>
+      <span class="log-detail">${h(r.text || '')}</span>
+    </div>`;
+  }
+
+  /* 详情页日志流的一行：时间 | 级别 | 主机/tag | 消息体 */
+  function lvRowHtml(r) {
+    const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
+    const host = r.host || (r.peer ? r.peer.split(':')[0] : '-');
+    const tag = r.tag ? `<span class="lv-tag"> ${h(r.tag)}</span>` : '';
+    return `<div class="lv-row sev-${sev}" data-seq="${r.seq || 0}">
+      <span class="lv-time">${fmtClock(r.ts)}</span>
+      <span class="lv-sev">${h(r.sev_name || '?')}</span>
+      <span class="lv-host">${h(host)}${tag}</span>
+      <span class="lv-text">${h(r.body != null ? r.body : r.text || '')}</span>
+    </div>`;
+  }
+
+  function syslogPass(r, tab) {
+    const sevActive = tab.syslogSev && tab.syslogSev !== 'all';
+    const q = (tab.syslogQuery || '').trim().toLowerCase();
+    /* 快速路径：没有过滤条件时不做任何字符串处理 */
+    if (!sevActive && !q) return true;
+    if (sevActive && String(r.sev) !== String(tab.syslogSev)) return false;
+    if (!q) return true;
+    const hay = `${r.host || ''} ${r.tag || ''} ${r.text || ''} ${r.peer || ''} ${r.sev_name || ''}`.toLowerCase();
+    return hay.includes(q);
+  }
+
+  /* 历史回放（打开详情页时拉一次环形缓冲） */
+  async function loadSvcSyslog(tab) {
+    try {
+      const rows = await api(`/api/services/${tab.svcId}/syslog`);
+      tab.syslog = Array.isArray(rows) ? rows : [];
+      /* 补单调序号，供增量渲染比对 */
+      tab.syslogSeq = tab.syslog.length;
+      tab.syslog.forEach((r, i) => {
+        r.seq = i + 1;
+      });
+    } catch (e) {
+      tab.syslog = [];
+      tab.syslogSeq = 0;
+    }
+    tab.syslogPaintSeq = 0;
+    if (state.activeTab === tab.id) paintSvcSyslog(tab, true);
+  }
+
+  /* 节流重绘：设备洪泛时最多每 200ms 刷一次 */
+  const syslogPaintAt = new Map();
+  function paintSvcSyslogSoon(tab) {
+    const now = Date.now();
+    if (now - (syslogPaintAt.get(tab.id) || 0) < 200) return;
+    syslogPaintAt.set(tab.id, now);
+    paintSvcSyslog(tab);
+  }
+
+  /* 过滤条件指纹：变了就必须全量重建 */
+  function syslogFilterKey(tab) {
+    return `${tab.syslogSev || 'all'}|${tab.syslogQuery || ''}`;
+  }
+
+  function paintSvcSyslog(tab, rebuild) {
+    const block = $('#svc-syslog-block');
+    if (!block) return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc || svc.proto !== 'syslog') return;
+
+    /* 暂停时冻结到按下暂停那一刻的快照 */
+    const all = tab.syslog || [];
+    const view = tab.syslogPaused && tab.syslogFrozenAt != null
+      ? all.slice(0, tab.syslogFrozenAt)
+      : all;
+    const rows = view.filter((r) => syslogPass(r, tab));
+    const cap = 800;
+    const shown = rows.length > cap ? rows.slice(-cap) : rows;
+    const list = $('#svc-syslog-list');
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+
+    const key = syslogFilterKey(tab);
+    const prevSeq = tab.syslogPaintSeq || 0;
+    const lastSeq = shown.length ? shown[shown.length - 1].seq || 0 : 0;
+    const firstSeq = shown.length ? shown[0].seq || 0 : 0;
+
+    /* 增量路径：过滤条件没变、已有渲染、且只往尾部追加。
+     * 洪泛时每秒几十条也只做 append/removeChild，不再重建 800 行 DOM。 */
+    const canAppend =
+      !rebuild &&
+      key === tab.syslogPaintKey &&
+      list.children.length > 0 &&
+      lastSeq > prevSeq &&
+      shown.length - list.children.length <= 200 &&
+      lastSeq - prevSeq >= 0;
+
+    if (canAppend) {
+      /* 头部：把已经被 cap 挤出去的旧行删掉 */
+      while (list.firstChild && Number(list.firstChild.dataset.seq || 0) < firstSeq)
+        list.removeChild(list.firstChild);
+      /* 尾部：只追加序号大于上次渲染位置的行 */
+      const frag = document.createDocumentFragment();
+      for (const r of shown) {
+        if ((r.seq || 0) <= prevSeq) continue;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = lvRowHtml(r);
+        if (wrap.firstChild) frag.appendChild(wrap.firstChild);
+      }
+      if (frag.childNodes.length) list.appendChild(frag);
+    } else {
+      list.innerHTML = shown.length
+        ? shown.map(lvRowHtml).join('')
+        : all.length
+          ? '<div class="conn-note">没有符合条件的日志，试试放宽级别过滤或清空搜索词。</div>'
+          : '<div class="conn-note">还没有收到日志。把设备的 syslog 指向本机后，消息会实时出现在这里。</div>';
+    }
+
+    tab.syslogPaintKey = key;
+    tab.syslogPaintSeq = lastSeq;
+
+    $('#svc-syslog-count').textContent = `${all.length} 条`;
+    $('#svc-log-shown').textContent =
+      rows.length !== view.length ? `显示 ${rows.length} 条` : '';
+    if (tab.syslogPaused)
+      $('#svc-log-shown').textContent += ' · 已暂停';
+    $('#svc-log-rate').textContent = syslogRateText(tab);
+    $('#svc-log-pause').textContent = tab.syslogPaused ? '继续' : '暂停';
+    $('#svc-log-pause').classList.toggle('active', !!tab.syslogPaused);
+
+    if ($('#svc-syslog-follow').checked && (atBottom || tab.syslogForceScroll)) {
+      list.scrollTop = list.scrollHeight;
+    }
+    tab.syslogForceScroll = false;
+  }
+
+  /* 近 5 秒到达速率 */
+  function syslogRateText(tab) {
+    const marks = tab.syslogMarks || [];
+    const now = Date.now();
+    const recent = marks.filter((t) => now - t < 5000).length;
+    tab.syslogMarks = marks.filter((t) => now - t < 5000);
+    if (!recent) return '';
+    return `${(recent / 5).toFixed(1)} 条/秒`;
+  }
+
   function openServiceDetail(svcId) {
     const svc = state.services.find((s) => s.id === svcId);
-    const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}` });
+    const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}`, syslog: null });
+    if (svc && svc.proto === 'syslog' && tab.syslog === null) loadSvcSyslog(tab);
     if (state.activeTab === tab.id) paintServiceDetail(tab);
     return tab;
   }
@@ -785,9 +1051,25 @@
       .join('');
   }
 
+  /* 只刷顶栏（服务状态、地址），不动日志区 */
+  function paintSvcHeader(tab) {
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc) return;
+    $('#svc-title').textContent = svc.name;
+    $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
+    $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
+    $('#svc-meta').textContent = svc.proto === 'syslog'
+      ? `Syslog · ${bindLabel(svc.bind)} · UDP :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`
+      : `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
+    $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
+  }
+
   function paintServiceDetail(tab) {
     const svc = state.services.find((s) => s.id === tab.svcId);
+    const view = $('#svc-view');
     if (!svc) {
+      view.classList.remove('syslog-mode');
+      $('#svc-syslog-block').classList.add('hidden');
       $('#svc-title').textContent = '服务已删除';
       $('#svc-badge').textContent = '—';
       $('#svc-badge').className = 'svc-badge';
@@ -797,6 +1079,10 @@
       $('#svc-recent').innerHTML = '';
       return;
     }
+    const isSyslog = svc.proto === 'syslog';
+    view.classList.toggle('syslog-mode', isSyslog);
+    $('#svc-syslog-block').classList.toggle('hidden', !isSyslog);
+
     const title = `服务 · ${svc.name}`;
     if (tab.title !== title) {
       tab.title = title;
@@ -805,8 +1091,22 @@
     $('#svc-title').textContent = svc.name;
     $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
     $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
-    $('#svc-meta').textContent = `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}`;
+    $('#svc-meta').textContent = isSyslog
+      ? `Syslog · ${bindLabel(svc.bind)} · UDP :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`
+      : `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
     $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
+
+    /* syslog 走整页日志视图，通用指标/槽位/最近活动都不渲染 */
+    if (isSyslog) {
+      const sev = tab.syslogSev || 'all';
+      [...document.querySelectorAll('#svc-sev-chips .chip')].forEach((c) =>
+        c.classList.toggle('active', c.dataset.sev === sev)
+      );
+      if (document.activeElement !== $('#svc-log-search'))
+        $('#svc-log-search').value = tab.syslogQuery || '';
+      paintSvcSyslog(tab);
+      return;
+    }
 
     const slots = svc.slots || [];
     const okSlots = slots.filter((x) => x.ok).length;
@@ -829,6 +1129,7 @@
             .map(
               (x) => `<div class="slot-row ${x.ok ? 'ok' : 'bad'}">
                 <span class="dot"></span>
+                <span class="slot-type ${x.transport === 'udp' ? 'udp' : 'tcp'}">${(x.transport || 'tcp').toUpperCase()}</span>
                 <span class="addr">${h(x.addr || '')}</span>
                 <span class="why">${x.ok ? '监听中' : h(x.hint || '绑定失败')}</span>
               </div>`
@@ -872,33 +1173,392 @@
     return el;
   }
 
+  /* 串口会话没有 IP 地址，标题栏改为显示「端口 · 波特率 帧格式」 */
+  function termEndpoints(tab) {
+    const sess = tab.sessionId ? state.sessions.find((s) => s.id === tab.sessionId) : null;
+    if (!sess || sess.transport !== 'serial') return null;
+    const parity = { 0: 'N', 1: 'O', 2: 'E' }[sess.parity] || 'N';
+    const bits = sess.data_bits || 8;
+    const stop = sess.stop_bits || 1;
+    const port = sess.serial_port || '串口';
+    const baud = sess.baud ? ` · ${sess.baud} ${bits}${parity}${stop}` : '';
+    return { peer: port + baud, local: '本地串口' };
+  }
+
   function paintTerminal(tab) {
+    const ep = termEndpoints(tab);
     $('#term-proto').textContent = tab.proto ? (protoLabels[tab.proto] || tab.proto) : '-';
-    $('#term-peer').textContent = tab.peer || '—';
-    $('#term-local').textContent = tab.local || '—';
+    $('#term-peer').textContent = ep ? ep.peer : tab.peer || '—';
+    $('#term-local').textContent = ep ? ep.local : tab.local || '—';
     $('#term-state').textContent = tab.state || 'closed';
     $('#term-state').className = 'state ' + (tab.state === 'open' ? 'open' : 'closed');
     $('#term-rx').textContent = 'RX ' + fmtBytes(tab.rx);
     $('#term-tx').textContent = 'TX ' + fmtBytes(tab.tx);
+    $('#term-mode-btn').textContent = tab.view === 'term' ? '日志视图' : '终端视图';
     const out = $('#term-out');
     out.innerHTML = '';
     tab.lines.forEach((l) => out.appendChild(termLineNode(l)));
     out.scrollTop = out.scrollHeight;
   }
 
+  /* ---------- 终端右键菜单 / 查找 / 日志 ---------- */
+
+  const ctxMenu = () => $('#term-menu');
+
+  function hideCtxMenu() {
+    ctxMenu().classList.add('hidden');
+  }
+
+  /* 终端行为开关（对应 KiTTY 的「滚动到清除屏幕」「按键滚动到底部」） */
+  const TERM_OPTS_KEY = 'nd.termOpts';
+
+  function termOpts() {
+    let o = null;
+    try { o = JSON.parse(localStorage.getItem(TERM_OPTS_KEY) || 'null'); } catch (e) { o = null; }
+    return {
+      clearScroll: !o || o.clearScroll !== false,
+      keyScroll: !o || o.keyScroll !== false,
+    };
+  }
+
+  function setTermOpt(opt, value) {
+    const o = termOpts();
+    o[opt] = value;
+    try { localStorage.setItem(TERM_OPTS_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+
+  /* 数据里是否含有「清屏」序列：ESC[2J / ESC[3J / ESC c */
+  function hasClearScreen(u8) {
+    for (let i = 0; i + 1 < u8.length; i++) {
+      if (u8[i] !== 0x1b) continue;
+      if (u8[i + 1] === 0x63) return true; /* ESC c */
+      if (u8[i + 1] !== 0x5b) continue; /* '[' */
+      let j = i + 2;
+      while (j < u8.length && u8[j] >= 0x30 && u8[j] <= 0x3f) j++;
+      if (j < u8.length && u8[j] === 0x4a) { /* 'J' */
+        const n = j - (i + 2);
+        if (n === 0 || (n === 1 && (u8[i + 2] === 0x32 || u8[i + 2] === 0x33))) return true;
+      }
+    }
+    return false;
+  }
+
+  function showCtxMenu(x, y, tab) {
+    const menu = ctxMenu();
+    const inst = tab ? termInst.get(tab.id) : null;
+    const sel = inst ? inst.term.getSelection() : '';
+    const opts = termOpts();
+    menu.querySelector('[data-act=copy]').disabled = !sel;
+    menu.querySelector('[data-act=toggle-clear]').classList.toggle('on', opts.clearScroll);
+    menu.querySelector('[data-act=toggle-key]').classList.toggle('on', opts.keyScroll);
+    menu.classList.remove('hidden');
+    /* 先显示再量尺寸，避免贴边时超出视口 */
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+
+  async function clipboardWrite(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+  }
+
+  async function clipboardRead() {
+    try {
+      return await navigator.clipboard.readText();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function setFindState(text) {
+    $('#find-state').textContent = text || '';
+  }
+
+  /* 自己数匹配数：xterm 的 onDidChangeResults 在非 decorations 模式下不稳定 */
+  function countMatches(term, q) {
+    if (!term || !q) return 0;
+    const buf = term.buffer.active;
+    let n = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      let at = 0;
+      while ((at = text.indexOf(q, at)) !== -1) {
+        n++;
+        at += q.length || 1;
+      }
+    }
+    return n;
+  }
+
+  const FIND_DECOR = {
+    matchBackground: '#35507a',
+    matchOverviewRuler: '#35507a',
+    activeMatchBackground: '#d29922',
+    activeMatchColorOverviewRuler: '#d29922',
+  };
+
+  function runSearch(backwards) {
+    const tab = activeTermTab();
+    if (!tab) return;
+    const inst = termInst.get(tab.id);
+    const q = $('#find-input').value;
+    if (!inst || !inst.search) return;
+    if (!q) {
+      inst.search.clearDecorations();
+      tab.findQuery = '';
+      tab.findIdx = 0;
+      setFindState('');
+      return;
+    }
+    const total = countMatches(inst.term, q);
+    if (!total) {
+      inst.search.clearDecorations();
+      tab.findQuery = q;
+      tab.findIdx = 0;
+      setFindState('无匹配');
+      return;
+    }
+    if (tab.findQuery !== q) {
+      tab.findQuery = q;
+      tab.findIdx = 0;
+    } else {
+      tab.findIdx = ((tab.findIdx + (backwards ? -1 : 1)) % total + total) % total;
+    }
+    const opts = { incremental: false, decorations: FIND_DECOR };
+    if (backwards) inst.search.findPrevious(q, opts);
+    else inst.search.findNext(q, opts);
+    setFindState(`${tab.findIdx + 1}/${total}`);
+  }
+
+  function openFind() {
+    $('#term-find').classList.remove('hidden');
+    $('#find-input').focus();
+    $('#find-input').select();
+  }
+
+  function closeFind() {
+    $('#term-find').classList.add('hidden');
+    const tab = activeTermTab();
+    const inst = tab ? termInst.get(tab.id) : null;
+    if (inst && inst.search) inst.search.clearDecorations();
+    setFindState('');
+  }
+
+  /* 日志开关：请求写到后端文件；前缀支持 {time} 占位 */
+  function logBarSync(tab) {
+    const on = !!(tab && tab.logOn);
+    $('#log-on').checked = on;
+    $('#log-path').textContent = (tab && tab.logPath) || '';
+  }
+
+  async function toggleConnLog(tab, on) {
+    if (!tab || !tab.connId) return;
+    try {
+      const r = await api(`/api/conn/${tab.connId}/log`, {
+        method: 'POST',
+        body: JSON.stringify({ on, prefix: $('#log-prefix').value }),
+      });
+      tab.logOn = on;
+      tab.logPath = on ? r.path || '' : '';
+      logBarSync(tab);
+      toast(on ? `开始记录：${tab.logPath}` : '已停止记录');
+    } catch (e) {
+      toast(errText(e));
+    }
+  }
+
+  /* ---------- 快捷发送与全局预置 ---------- */
+
+  const QUICK_EOL = { crlf: '\r\n', lf: '\n', cr: '\r', none: '' };
+
+  function sendBytes(bytes) {
+    const tab = activeTermTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+      toast('尚未连接');
+      return false;
+    }
+    tab.ws.send(bytes);
+    tab.tx += bytes.length;
+    if (state.activeTab === tab.id) $('#term-tx').textContent = 'TX ' + fmtBytes(tab.tx);
+    return true;
+  }
+
+  function quickSend(text) {
+    const value = text != null ? text : $('#quick-input').value;
+    if (!value) return;
+    const eol = QUICK_EOL[$('#quick-eol').value] || '';
+    if (sendBytes(new TextEncoder().encode(value + eol)) && text == null) $('#quick-input').value = '';
+  }
+
+  function renderQuickPresets() {
+    const box = $('#quick-presets');
+    if (!state.presets.length) {
+      box.innerHTML = '<span class="quick-empty">还没有预置命令：输入框里写一条，点「存为预置」</span>';
+      return;
+    }
+    box.innerHTML = state.presets
+      .map((c, i) => `<button class="quick-preset" data-idx="${i}" title="左键发送，右键删除">${h(c)}</button>`)
+      .join('');
+  }
+
+  async function refreshPresets() {
+    try {
+      state.presets = await api('/api/presets');
+    } catch (e) {
+      state.presets = [];
+    }
+    renderQuickPresets();
+  }
+
+  async function savePresets(list) {
+    await api('/api/presets', { method: 'PUT', body: JSON.stringify({ presets: list }) });
+    state.presets = list;
+    renderQuickPresets();
+  }
+
+  /* ---------- xterm 终端仿真 ---------- */
+
+  const termInst = new Map(); /* tab.id -> { term, fit, slot } */
+
+  function xtermAvailable() {
+    return typeof Terminal !== 'undefined' && typeof FitAddon !== 'undefined';
+  }
+
+  function ensureXterm(tab) {
+    let inst = termInst.get(tab.id);
+    if (inst || !xtermAvailable()) return inst || null;
+    const host = $('#term-xterm');
+    const slot = document.createElement('div');
+    slot.className = 'xterm-slot';
+    slot.dataset.tab = String(tab.id);
+    host.appendChild(slot);
+
+    const term = new Terminal({
+      convertEol: true,
+      cursorBlink: true,
+      /* 搜索高亮用了 decorations，属于 proposed API，不开这个开关 findNext 会抛异常 */
+      allowProposedApi: true,
+      fontSize: 13,
+      fontFamily: 'Consolas, "Cascadia Mono", "Courier New", monospace',
+      /* 2000 行对调试足够，5000 行会让每开一个终端都多占几 MB 缓冲 */
+      scrollback: 2000,
+      theme: {
+        background: '#0d1117',
+        foreground: '#c9d1d9',
+        cursor: '#58a6ff',
+        selectionBackground: '#264f78',
+      },
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    let search = null;
+    if (typeof SearchAddon !== 'undefined') {
+      search = new SearchAddon.SearchAddon();
+      term.loadAddon(search);
+    }
+    term.open(slot);
+    inst = { term, fit, slot, search };
+    termInst.set(tab.id, inst);
+    fit.fit();
+
+    /* 键盘输入直接发到连接 */
+    term.onData((data) => {
+      const t = tabById(tab.id);
+      /* 按键时回到最新输出（KiTTY 的「按键滚动到底部」） */
+      if (termOpts().keyScroll) {
+        try { term.scrollToBottom(); } catch (e) {}
+      }
+      if (!t || !t.ws || t.ws.readyState !== WebSocket.OPEN) return;
+      const bytes = new TextEncoder().encode(data);
+      t.ws.send(bytes);
+      t.tx += bytes.length;
+      if (state.activeTab === t.id) $('#term-tx').textContent = 'TX ' + fmtBytes(t.tx);
+    });
+
+    /* 回放已有输出 */
+    for (const l of tab.lines) {
+      if (l.sys) term.write(`\x1b[90m· ${l.sys}\x1b[0m\r\n`);
+      else if (l.b) term.write(l.b);
+    }
+    return inst;
+  }
+
+  function disposeXterm(tab) {
+    const inst = termInst.get(tab.id);
+    if (!inst) return;
+    try { inst.term.dispose(); } catch (e) {}
+    if (inst.slot && inst.slot.parentNode) inst.slot.parentNode.removeChild(inst.slot);
+    termInst.delete(tab.id);
+  }
+
+  /* 切换/应用终端视图：term = xterm，log = 逐行日志 */
+  function applyTermView(tab) {
+    const termMode = tab.view === 'term' && xtermAvailable();
+    $('#term-xterm').classList.toggle('hidden', !termMode);
+    $('#term-out').classList.toggle('hidden', termMode);
+    $('#term-send').classList.toggle('hidden', termMode);
+    $('#term-quick').classList.toggle('hidden', !termMode);
+    $('#quick-presets').classList.toggle('hidden', !termMode);
+    $('#term-mode-btn').textContent = tab.view === 'term' ? '日志视图' : '终端视图';
+    logBarSync(tab);
+
+    termInst.forEach((inst, id) => {
+      inst.slot.classList.toggle('hidden', !(termMode && id === tab.id));
+    });
+
+    if (termMode) {
+      const inst = ensureXterm(tab);
+      if (inst) {
+        requestAnimationFrame(() => {
+          try {
+            inst.fit.fit();
+            inst.term.focus();
+          } catch (e) {}
+        });
+      }
+    }
+  }
+
   function termPush(tab, line) {
     tab.lines.push(line);
-    while (tab.lines.length > 3000) tab.lines.shift();
+    /* 成批裁剪，避免每来一块数据就 shift() 搬 3000 个元素 */
+    if (tab.lines.length > 4000) tab.lines.splice(0, tab.lines.length - 3000);
     if (state.activeTab !== tab.id) return;
+    /* 终端视图下日志 DOM 是不可见的：不要为每一块数据建节点，
+     * 切回日志视图时 paintTerminal 会按 tab.lines 重建 */
+    if (tab.view === 'term') return;
     const out = $('#term-out');
     const nearBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 40;
     out.appendChild(termLineNode(line));
-    while (out.childElementCount > 3000) out.removeChild(out.firstChild);
+    if (out.childElementCount > 3200) {
+      const drop = out.childElementCount - 3000;
+      for (let i = 0; i < drop; i++) out.removeChild(out.firstChild);
+    }
     if (nearBottom) out.scrollTop = out.scrollHeight;
   }
 
   function termSys(tab, text) {
     termPush(tab, { sys: text });
+    if (tab.view === 'term') {
+      const inst = termInst.get(tab.id);
+      if (inst) inst.term.write(`\x1b[90m· ${text}\x1b[0m\r\n`);
+    }
   }
 
   function repaintTerminal() {
@@ -964,12 +1624,26 @@
         $('#term-rx').textContent = 'RX ' + fmtBytes(tab.rx);
         $('#term-tx').textContent = 'TX ' + fmtBytes(tab.tx);
       }
-      termPush(tab, { d: dir, text: termText(payload), ts });
+      termPush(tab, { d: dir, text: termText(payload), ts, b: payload });
+      /* 终端只渲染收到的数据；自己发出去的内容由对端回显，避免重复显示 */
+      if (tab.view === 'term' && !dir) {
+        const inst = termInst.get(tab.id);
+        if (inst) {
+          /* 对端清屏时把视图带回底部（KiTTY 的「滚动到清除屏幕」） */
+          const clear = hasClearScreen(payload);
+          inst.term.write(payload, () => {
+            if (clear && termOpts().clearScroll) {
+              try { inst.term.scrollToBottom(); } catch (e) {}
+            }
+          });
+        }
+      }
     };
   }
 
-  function connectTerminal(connId) {
+  function connectTerminal(connId, sessionId) {
     const tab = openTab({ kind: 'term', connId, title: `终端 #${connId}` });
+    if (sessionId) tab.sessionId = sessionId;
     if (!tab.proto) {
       api(`/api/conn/${connId}`)
         .then((c) => {
@@ -983,6 +1657,12 @@
         .catch(() => {});
     }
     return tab;
+  }
+
+  /* 删除会话时把它的终端标签一起关掉（不论连接是否还活着） */
+  function closeTabsForSession(sessionId) {
+    if (!sessionId) return;
+    state.tabs.filter((t) => t.kind === 'term' && t.sessionId === sessionId).forEach((t) => closeTab(t.id));
   }
 
   /* 当前终端对应的连接已经不存在（例如所属会话/服务被删）时收掉标签 */
@@ -1002,6 +1682,10 @@
     tab.lines = [];
     tab.rx = 0;
     tab.tx = 0;
+    const inst = termInst.get(tab.id);
+    if (inst) {
+      try { inst.term.clear(); } catch (e) {}
+    }
     paintTerminal(tab);
   }
 
@@ -1662,12 +2346,32 @@
   /* 在协议基准端口附近随机取一个没被占用的端口 */
   function suggestPort(proto) {
     const base = SERVICE_PORTS[proto] || 9000;
-    const used = new Set(state.services.map((s) => s.bind && s.bind.port));
+    const used = new Set(
+      state.services
+        .map((s) => [s.bind && s.bind.port, s.bind2 && s.bind2.port])
+        .flat()
+        .filter((p) => p)
+    );
     for (let i = 0; i < 200; i++) {
       const p = base + Math.floor(Math.random() * PORT_SPREAD);
       if (p > 1024 && p < 65536 && !used.has(p)) return p;
     }
     return base;
+  }
+
+  /* syslog TCP 副监听端口：6514 + 偏移，且不撞 UDP 主端口 */
+  function suggestSyslogTcpPort(udpPort) {
+    const used = new Set(
+      state.services
+        .map((s) => [s.bind && s.bind.port, s.bind2 && s.bind2.port])
+        .flat()
+        .filter((p) => p)
+    );
+    for (let i = 0; i < 200; i++) {
+      const p = SYSLOG_TCP_PORT + Math.floor(Math.random() * PORT_SPREAD);
+      if (p > 1024 && p < 65536 && !used.has(p) && p !== udpPort) return p;
+    }
+    return SYSLOG_TCP_PORT;
   }
 
   function openServiceDialog(s) {
@@ -1688,8 +2392,11 @@
     $('#f-ftp-root').value = s && s.options ? (s.options.root || '') : '';
     $('#f-ftp-anon').checked = s && s.options ? s.options.anonymous !== false : true;
     $('#f-ftp-ro').checked = !!(s && s.options && s.options.readonly);
+    $('#f-port2').value = s && s.bind2 ? s.bind2.port : suggestSyslogTcpPort(Number($('#f-port').value));
     $('#ftp-options').classList.toggle('hidden',
       ['ftp', 'tftp', 'http'].indexOf(proto) < 0);
+    $('#wrap-port2').classList.toggle('hidden', proto !== 'syslog');
+    $('#echo-opt').classList.toggle('hidden', proto === 'syslog');
     $('#bind-result').classList.add('hidden');
     $('#bind-result').innerHTML = '';
     updateFormVisibility();
@@ -1706,6 +2413,11 @@
       bind: formBind(),
       echo: $('#f-echo').checked,
     };
+    if (body.proto === 'syslog') {
+      const b2 = formBind();
+      b2.port = Number($('#f-port2').value || 0);
+      body.bind2 = b2;
+    }
     if (body.proto === 'ftp' || body.proto === 'tftp' || body.proto === 'http') {
       body.options = {
         root: $('#f-ftp-root').value.trim(),
@@ -1809,6 +2521,21 @@
       btn.textContent = '选择目录…';
     }
   });
+  $('#btn-pick-key').addEventListener('click', async () => {
+    const btn = $('#btn-pick-key');
+    btn.disabled = true;
+    btn.textContent = '选择中…';
+    try {
+      const r = await api('/api/system/pick-file', { method: 'POST', body: '{}' });
+      if (r.ok && r.path) $('#s-ssh-key').value = r.path;
+    } catch (e) {
+      toast(errText(e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '浏览…';
+    }
+  });
+
   $('#f-kind').addEventListener('change', updateFormVisibility);
   $('#f-port').addEventListener('input', () => {
     state.portTouched = true;
@@ -1820,8 +2547,12 @@
     if (!name.value || Object.values(SERVICE_DEFAULTS).includes(name.value))
       name.value = SERVICE_DEFAULTS[proto] || '调试服务';
     if (!state.portTouched) $('#f-port').value = suggestPort(proto);
+    if (proto === 'syslog')
+      $('#f-port2').value = suggestSyslogTcpPort(Number($('#f-port').value || 0));
     $('#ftp-options').classList.toggle('hidden',
       ['ftp', 'tftp', 'http'].indexOf(proto) < 0);
+    $('#wrap-port2').classList.toggle('hidden', proto !== 'syslog');
+    $('#echo-opt').classList.toggle('hidden', proto === 'syslog');
   });
   $('#btn-tftp').addEventListener('click', openTftpPanel);
   $('#tftp-get').addEventListener('click', tftpDownload);
@@ -1912,6 +2643,7 @@
     fillSerialPorts();
     updateSessionSource();
     syncProtoTransport();
+    formError('');
     $('#s-host').value = '';
     $('#s-family').disabled = false;
     $('#s-family').value = 'dual';
@@ -1934,6 +2666,8 @@
     const m = b.dataset.mode;
     const t = $('#s-transport');
     const pr = $('#s-proto');
+    /* 换会话类型时上一次的校验错误已经不适用了 */
+    formError('');
     if (m === 'ssh') t.value = 'ssh';
     else if (m === 'serial') t.value = 'serial';
     else {
@@ -1967,9 +2701,9 @@
     if (btn && btn.dataset.sact === 'disconnect') {
       try {
         await api(`/api/sessions/${id}/disconnect`, { method: 'POST' });
-        if (sess && sess.conn_id) closeTabsForConn(sess.conn_id);
+        /* 不关闭终端标签：保留此前的输出，标签会自己变成「已断开」 */
         await refreshSessions();
-        toast('已断开');
+        toast('已断开，输出保留');
       } catch (e) {
         toast(errText(e));
       }
@@ -1981,6 +2715,7 @@
         const connId = sess && sess.conn_id;
         await api(`/api/sessions/${id}`, { method: 'DELETE' });
         closeTabsForConn(connId);
+        closeTabsForSession(id);
         await refreshSessions();
       } catch (e) {
         toast(errText(e));
@@ -2032,6 +2767,143 @@
   });
 
   $('#btn-clear').addEventListener('click', clearActiveTerminal);
+  /* 终端右键菜单 */
+  $('#terminal').addEventListener('contextmenu', (ev) => {
+    const tab = activeTermTab();
+    if (!tab) return;
+    ev.preventDefault();
+    showCtxMenu(ev.clientX, ev.clientY, tab);
+  });
+  document.addEventListener('click', (ev) => {
+    if (!ev.target.closest('#term-menu')) hideCtxMenu();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { hideCtxMenu(); }
+  });
+  window.addEventListener('resize', hideCtxMenu);
+
+  $('#term-menu').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (!btn || btn.disabled) return;
+    const act = btn.dataset.act;
+    const tab = activeTermTab();
+    hideCtxMenu();
+    if (!tab) return;
+    const inst = termInst.get(tab.id);
+    if (act === 'copy') {
+      const sel = inst ? inst.term.getSelection() : '';
+      if (sel && (await clipboardWrite(sel))) toast('已复制');
+    } else if (act === 'paste') {
+      const text = await clipboardRead();
+      if (!text) { toast('剪贴板里没有文本'); return; }
+      if (inst) inst.term.paste(text); /* 走 onData → 发到连接 */
+    } else if (act === 'selectall') {
+      if (inst) inst.term.selectAll();
+    } else if (act === 'search') {
+      openFind();
+    } else if (act === 'clear') {
+      clearActiveTerminal();
+    } else if (act === 'toggle-clear' || act === 'toggle-key') {
+      const key = act === 'toggle-clear' ? 'clearScroll' : 'keyScroll';
+      const o = termOpts();
+      setTermOpt(key, !o[key]);
+      toast(key === 'clearScroll'
+        ? `清屏时滚到底部：${!o[key] ? '开' : '关'}`
+        : `按键时滚到底部：${!o[key] ? '开' : '关'}`);
+    }
+  });
+
+  /* 查找栏 */
+  $('#find-input').addEventListener('input', () => runSearch(false));
+  $('#find-input').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      runSearch(ev.shiftKey);
+    } else if (ev.key === 'Escape') {
+      closeFind();
+    }
+  });
+  $('#find-next').addEventListener('click', () => runSearch(false));
+  $('#find-prev').addEventListener('click', () => runSearch(true));
+  $('#find-close').addEventListener('click', closeFind);
+
+  /* 日志栏 */
+  $('#term-log-btn').addEventListener('click', () => {
+    $('#term-log-bar').classList.toggle('hidden');
+    const tab = activeTermTab();
+    if (tab) logBarSync(tab);
+  });
+  $('#log-on').addEventListener('change', (ev) => {
+    const tab = activeTermTab();
+    if (tab) toggleConnLog(tab, ev.target.checked);
+  });
+  $('#log-prefix').addEventListener('change', () => {
+    const tab = activeTermTab();
+    if (tab && tab.logOn) toggleConnLog(tab, true);
+  });
+
+  $('#term-mode-btn').addEventListener('click', () => {
+    const tab = activeTermTab();
+    if (!tab) return;
+    tab.view = tab.view === 'term' ? 'log' : 'term';
+    paintTerminal(tab);
+    applyTermView(tab);
+  });
+
+  /* 快捷发送栏 */
+  $('#quick-send').addEventListener('click', () => quickSend());
+  $('#quick-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      quickSend();
+    }
+  });
+  $('#quick-save').addEventListener('click', async () => {
+    const value = $('#quick-input').value.trim();
+    if (!value) {
+      toast('输入框是空的');
+      return;
+    }
+    if (state.presets.includes(value)) {
+      toast('这条已经是预置了');
+      return;
+    }
+    if (state.presets.length >= 24) {
+      toast('预置最多 24 条');
+      return;
+    }
+    try {
+      await savePresets(state.presets.concat([value]));
+      toast('已存为预置');
+    } catch (e) {
+      toast(errText(e));
+    }
+  });
+  $('#quick-presets').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.quick-preset');
+    if (!btn) return;
+    quickSend(state.presets[Number(btn.dataset.idx)]);
+  });
+  $('#quick-presets').addEventListener('contextmenu', async (ev) => {
+    const btn = ev.target.closest('.quick-preset');
+    if (!btn) return;
+    ev.preventDefault();
+    const idx = Number(btn.dataset.idx);
+    const cmd = state.presets[idx];
+    if (!confirm(`删除预置「${cmd}」？`)) return;
+    try {
+      await savePresets(state.presets.filter((_, i) => i !== idx));
+    } catch (e) {
+      toast(errText(e));
+    }
+  });
+  window.addEventListener('resize', () => {
+    const tab = activeTermTab();
+    if (!tab || tab.view !== 'term') return;
+    const inst = termInst.get(tab.id);
+    if (!inst) return;
+    try { inst.fit.fit(); } catch (e) {}
+  });
   $('#send-btn').addEventListener('click', sendInput);
   $('#send-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -2059,6 +2931,52 @@
   $('#log-follow').addEventListener('change', () => {
     const tab = activeTab();
     if (tab && tab.kind === 'log') paintLog(tab);
+  });
+
+  /* 详情页 syslog 区块：自动滚动与清空 */
+  /* 详情页 syslog 查看器：级别过滤、搜索、暂停、清空、自动滚动 */
+  $('#svc-syslog-follow').addEventListener('change', () => {
+    const tab = activeTab();
+    if (tab && tab.kind === 'svc') paintSvcSyslog(tab);
+  });
+  $('#svc-sev-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogSev = btn.dataset.sev;
+    [...document.querySelectorAll('#svc-sev-chips .chip')].forEach((c) =>
+      c.classList.toggle('active', c === btn)
+    );
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-search').addEventListener('input', (e) => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogQuery = e.target.value;
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-pause').addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogPaused = !tab.syslogPaused;
+    tab.syslogFrozenAt = tab.syslogPaused ? (tab.syslog || []).length : null;
+    if (!tab.syslogPaused) tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-clear').addEventListener('click', async () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    try {
+      await api(`/api/services/${tab.svcId}/syslog`, { method: 'DELETE' });
+    } catch (e) {
+      toast(errText(e));
+    }
+    tab.syslog = [];
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
   });
 
   /* ---- 服务详情页操作 ---- */
@@ -2098,10 +3016,14 @@
     if (tab && tab.kind === 'svc') openServiceLog(tab.svcId);
   });
 
-  /* 运行时长每秒走一格 */
+  /* 运行时长每秒走一格（syslog 日志流自己刷新，不做整页重建） */
   setInterval(() => {
+    if (document.hidden) return; /* 窗口不可见时不做任何定时渲染 */
     const tab = activeTab();
-    if (tab && tab.kind === 'svc') paintServiceDetail(tab);
+    if (!tab || tab.kind !== 'svc') return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (svc && svc.proto === 'syslog') return;
+    paintServiceDetail(tab);
   }, 1000);
 
   $('#tabs').addEventListener('click', (ev) => {
@@ -2126,12 +3048,20 @@
       updateFormVisibility();
       await refreshServices();
       await refreshSessions();
+      await refreshPresets();
       $('#status-line').textContent = '就绪';
       connectEvents();
       setInterval(() => {
+        if (document.hidden) return; /* 最小化/切走时停止轮询，省 CPU 与电量 */
         refreshServices();
         refreshSessions();
       }, 3000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          refreshServices();
+          refreshSessions();
+        }
+      });
     } catch (e) {
       $('#status-line').textContent = '初始化失败';
       document.body.insertAdjacentHTML(

@@ -7,6 +7,7 @@
 #include "proto/ftp_server.h"
 #include "proto/tftp_server.h"
 #include "proto/http_server.h"
+#include "proto/syslog_server.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -79,16 +80,33 @@ static nd_conn *svc_conn_by_fd(nd_service *s, int fd){
     return found;
 }
 
+/* fd 是否属于某个 plan 的监听 socket */
+static int plan_has_fd(const nd_plan *p, int fd)
+{
+    for (size_t i = 0; i < p->n; i++)
+        if (p->slot[i].fd == fd)
+            return 1;
+    return 0;
+}
+
 static void *accept_thread(void *arg)
 {
     nd_service *s = (nd_service *)arg;
-    nd_pollfd fds[ND_MAX_LISTEN_SOCKS];
+    nd_pollfd fds[ND_MAX_LISTEN_SOCKS * 2];
     size_t n = 0, i;
     int is_udp = (s->bind.type == SOCK_DGRAM);
 
     for (i = 0; i < s->plan.n; i++) {
         if (s->plan.slot[i].fd >= 0) {
             fds[n].fd = s->plan.slot[i].fd;
+            fds[n].events = ND_POLLIN;
+            fds[n].revents = 0;
+            n++;
+        }
+    }
+    for (i = 0; i < s->plan2.n; i++) {
+        if (s->plan2.slot[i].fd >= 0) {
+            fds[n].fd = s->plan2.slot[i].fd;
             fds[n].events = ND_POLLIN;
             fds[n].revents = 0;
             n++;
@@ -104,6 +122,53 @@ static void *accept_thread(void *arg)
         for (i = 0; i < n; i++) {
             if (!(fds[i].revents & ND_POLLIN))
                 continue;
+            /* syslog 的 TCP 副监听 */
+            if (plan_has_fd(&s->plan2, fds[i].fd)) {
+                for (;;) {
+                    nd_addr peer, local;
+                    int cfd;
+                    nd_conn *c;
+                    nd_syslog_tcp_job *job;
+                    nd_thread th;
+
+                    if (atomic_load(&s->stopping))
+                        break;
+                    cfd = nd_net_accept(fds[i].fd, &peer, &local);
+                    if (cfd < 0)
+                        break;
+                    c = nd_conn_new(cfd, &peer, &local, s->id, "syslog", 0);
+                    if (!c) {
+                        nd_net_close(cfd);
+                        continue;
+                    }
+                    if (!svc_add_conn(s, c)) {
+                        nd_net_shutdown(cfd);
+                        nd_net_close(cfd);
+                        nd_conn_put(c);
+                        continue;
+                    }
+                    job = (nd_syslog_tcp_job *)calloc(1, sizeof(*job));
+                    if (!job) {
+                        nd_conn_close(c);
+                        continue;
+                    }
+                    job->svc = s;
+                    job->conn = c;
+                    job->fd = cfd;
+                    job->peer = peer;
+                    atomic_fetch_add(&s->refs, 1); /* 读线程持有 */
+                    atomic_fetch_add(&c->refs, 1); /* 读线程持有 */
+                    if (nd_thread_start(&th, nd_syslog_tcp_thread, job, 256 * 1024) != 0) {
+                        atomic_fetch_sub(&s->refs, 1);
+                        atomic_fetch_sub(&c->refs, 1);
+                        free(job);
+                        nd_conn_close(c);
+                        continue;
+                    }
+                    nd_thread_detach(&th);
+                }
+                continue;
+            }
             if (is_udp) {
                 unsigned char buf[65536];
                 nd_addr peer;
@@ -133,8 +198,14 @@ static void *accept_thread(void *arg)
                         continue;
                     }
                     c = svc_conn_by_fd(s, fds[i].fd);
-                    if (c)
+                    if (c) {
                         nd_conn_note_rx(c, buf, (size_t)rn, &peer);
+                        /* syslog 报文没有分隔符，终端视图里补换行便于阅读 */
+                        if (!strcmp(s->proto, "syslog"))
+                            nd_conn_note_rx(c, "\r\n", 2, NULL);
+                    }
+                    if (!strcmp(s->proto, "syslog"))
+                        nd_syslog_handle(s, &peer, (const char *)buf, (size_t)rn);
                     /* 非阻塞套接字：继续读直到 EWOULDBLOCK */
                 }
                 continue;
@@ -241,7 +312,10 @@ nd_service *nd_service_new(const char *name, const char *proto,
     atomic_init(&s->http_requests, 0);
     atomic_init(&s->started_ms, 0);
     atomic_init(&s->peak_conns, 0);
+    atomic_init(&s->syslog_msgs, 0);
     nd_mutex_init(&s->lock);
+    if (nd_mutex_init(&s->syslog_lock) == 0)
+        s->syslog_lock_init = 1;
 
     nd_mutex_lock(&g_lock);
     s->id = g_next_service_id++;
@@ -277,6 +351,20 @@ int nd_service_start(nd_service *s, char *err, size_t errlen)
         return rc;
     }
 
+    /* syslog：TCP 副监听（RFC 6587） */
+    memset(&s->plan2, 0, sizeof(s->plan2));
+    if (!strcmp(s->proto, "syslog") && s->has_bind2 && s->bind2.port) {
+        s->bind2.type = SOCK_STREAM;
+        rc = nd_plan_build(&s->bind2, ifs, n_ifs, 1, &s->plan2);
+        if (rc != ND_OK) {
+            nd_plan_close(&s->plan);
+            if (err)
+                snprintf(err, errlen, "TCP 监听: %s", nd_error_str(rc));
+            snprintf(s->last_error, sizeof(s->last_error), "TCP 监听: %s", nd_error_str(rc));
+            return rc;
+        }
+    }
+
     if (s->bind.type == SOCK_DGRAM && strcmp(s->proto, "tftp") != 0) {        size_t made = 0;
         for (size_t i = 0; i < s->plan.n; i++) {
             nd_conn *c;
@@ -305,10 +393,16 @@ int nd_service_start(nd_service *s, char *err, size_t errlen)
     atomic_store(&s->running, 1);
     atomic_store(&s->started_ms, nd_monotonic_ms());
     atomic_store(&s->peak_conns, 0);
+    atomic_store(&s->syslog_msgs, 0);
+    if (!strcmp(s->proto, "syslog"))
+        nd_syslog_log_open(s);
     atomic_fetch_add(&s->refs, 1); /* accept 线程持有 */
     if (nd_thread_start(&s->th_accept, accept_thread, s, 256 * 1024) != 0) {
         atomic_fetch_sub(&s->refs, 1);
         nd_plan_close(&s->plan);
+        if (s->plan2.n)
+            nd_plan_close(&s->plan2);
+        nd_syslog_log_close(s);
         atomic_store(&s->running, 0);
         return ND_E_IO_THREAD;
     }
@@ -352,6 +446,9 @@ void nd_service_stop(nd_service *s)
     }
     free(copy);
     nd_plan_close(&s->plan);
+    if (s->plan2.n)
+        nd_plan_close(&s->plan2);
+    nd_syslog_log_close(s);
 }
 
 void nd_service_free(nd_service *s)
@@ -394,6 +491,8 @@ void nd_service_put(nd_service *s)
     if (!s)
         return;
     if (atomic_fetch_sub(&s->refs, 1) == 1) {
+        if (s->syslog_lock_init)
+            nd_mutex_destroy(&s->syslog_lock);
         free(s->conns);
         nd_mutex_destroy(&s->lock);
         free(s);
@@ -423,4 +522,40 @@ size_t nd_service_conn_count(nd_service *s)
     n = s->n_conns;
     nd_mutex_unlock(&s->lock);
     return n;
+}
+
+size_t nd_service_syslog_snapshot(nd_service *s, nd_syslog_rec *out,
+                                  size_t cap, int skip_last)
+{
+    size_t n = 0, i;
+
+    if (!s || !out || !cap || !s->syslog_lock_init)
+        return 0;
+
+    nd_mutex_lock(&s->syslog_lock);
+    {
+        size_t have = s->syslog_count;
+        size_t skip = skip_last && have ? 1 : 0;
+        size_t want = have - skip;
+        if (want > cap)
+            want = cap;
+        /* 跳过最后 skip 条，取最新的 want 条里最老的在前 */
+        for (i = 0; i < want; i++) {
+            size_t back = skip + (want - 1 - i); /* 0 = 最新 */
+            size_t idx = (s->syslog_head + ND_SYSLOG_RING - 1 - back) % ND_SYSLOG_RING;
+            out[n++] = s->syslog_ring[idx];
+        }
+    }
+    nd_mutex_unlock(&s->syslog_lock);
+    return n;
+}
+
+void nd_service_syslog_clear(nd_service *s)
+{
+    if (!s || !s->syslog_lock_init)
+        return;
+    nd_mutex_lock(&s->syslog_lock);
+    s->syslog_head = 0;
+    s->syslog_count = 0;
+    nd_mutex_unlock(&s->syslog_lock);
 }

@@ -300,6 +300,76 @@ int nd_pick_folder(char *out, size_t cap)
     return -1;
 }
 
+int nd_pick_file(char *out, size_t cap)
+{
+    HRESULT init_hr;
+    HRESULT hr;
+    IFileOpenDialog *dlg = NULL;
+    IShellItem *item = NULL;
+    PWSTR wpath = NULL;
+    HWND owner;
+    int result = -1;
+
+    if (!out || cap == 0)
+        return -1;
+    out[0] = '\0';
+    owner = FindWindowW(L"NetDebugMainWindow", NULL);
+    if (!owner)
+        owner = GetForegroundWindow();
+
+    init_hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (SUCCEEDED(init_hr)) {
+        hr = CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
+                              &IID_IFileOpenDialog, (void **)&dlg);
+        if (SUCCEEDED(hr) && dlg) {
+            DWORD opts = 0;
+            dlg->lpVtbl->GetOptions(dlg, &opts);
+            dlg->lpVtbl->SetOptions(dlg, opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST |
+                                          FOS_PATHMUSTEXIST);
+            hr = dlg->lpVtbl->Show(dlg, owner);
+            if (hr == S_OK && SUCCEEDED(dlg->lpVtbl->GetResult(dlg, &item)) && item) {
+                if (SUCCEEDED(item->lpVtbl->GetDisplayName(item, SIGDN_FILESYSPATH, &wpath)) &&
+                    wpath) {
+                    WideCharToMultiByte(CP_UTF8, 0, wpath, -1, out, (int)cap, NULL, NULL);
+                    out[cap - 1] = '\0';
+                    CoTaskMemFree(wpath);
+                    result = 1;
+                }
+            } else if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+                result = 0;
+            }
+        }
+    }
+
+    if (item)
+        item->lpVtbl->Release(item);
+    if (dlg)
+        dlg->lpVtbl->Release(dlg);
+    if (SUCCEEDED(init_hr))
+        CoUninitialize();
+    if (result >= 0)
+        return result;
+
+    /* 兜底：老式打开文件对话框 */
+    {
+        OPENFILENAMEW ofn;
+        wchar_t wfile[MAX_PATH];
+        memset(&ofn, 0, sizeof(ofn));
+        memset(wfile, 0, sizeof(wfile));
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = owner;
+        ofn.lpstrFile = wfile;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrTitle = L"选择文件";
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetOpenFileNameW(&ofn))
+            return 0;
+        WideCharToMultiByte(CP_UTF8, 0, wfile, -1, out, (int)cap, NULL, NULL);
+        out[cap - 1] = '\0';
+        return 1;
+    }
+}
+
 #else /* POSIX */
 
 uint64_t nd_wall_ms(void)
@@ -455,6 +525,13 @@ char *nd_sys_error(int err, char *buf, size_t cap)
 }
 
 int nd_pick_folder(char *out, size_t cap)
+{
+    (void)out;
+    (void)cap;
+    return -1;
+}
+
+int nd_pick_file(char *out, size_t cap)
 {
     (void)out;
     (void)cap;

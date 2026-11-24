@@ -70,6 +70,7 @@ set(ND_LIB_SOURCES
     src/proto/tftp_server.c
     src/proto/ssh_client.c
     src/proto/smb2_client.c
+    src/proto/syslog_server.c
     src/httpd/http.c
     src/httpd/sha1.c
     src/httpd/base64.c

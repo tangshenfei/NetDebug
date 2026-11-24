@@ -6,6 +6,7 @@
   <title>NetDebug · 网络调试工作台</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%232563EB'/><text x='32' y='45' font-size='40' text-anchor='middle' fill='white' font-family='Segoe UI' font-weight='bold'>N</text></svg>">
   <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
 </head>
 <body>
   <div class="app">
@@ -101,13 +102,43 @@
               <span id="term-state" class="state">closed</span>
               <span id="term-rx" class="muted">RX 0 B</span>
               <span id="term-tx" class="muted">TX 0 B</span>
+              <button class="ghost-btn" id="term-log-btn" title="把收发内容记录到文件">日志</button>
+              <button class="ghost-btn" id="term-mode-btn" title="在终端仿真与日志视图之间切换">日志视图</button>
               <button class="ghost-btn" id="btn-clear">清空</button>
               <label class="check"><input type="checkbox" id="opt-hex"> HEX</label>
               <label class="check"><input type="checkbox" id="opt-ts" checked> 时间戳</label>
             </div>
           </div>
-          <pre class="term-out" id="term-out"></pre>
-          <div class="term-send">
+          <div class="term-find hidden" id="term-find">
+            <input id="find-input" type="text" placeholder="在终端里查找…" autocomplete="off" spellcheck="false">
+            <button class="ghost-btn" id="find-prev" title="上一个">↑</button>
+            <button class="ghost-btn" id="find-next" title="下一个">↓</button>
+            <span id="find-state" class="muted"></span>
+            <button class="ghost-btn" id="find-close" title="关闭">×</button>
+          </div>
+          <div class="term-log-bar hidden" id="term-log-bar">
+            <label class="check"><input type="checkbox" id="log-on"> 记录到文件</label>
+            <input id="log-prefix" type="text" value="[{time}] " spellcheck="false"
+                   placeholder="行前缀，可用 {time} 和 {dir}">
+            <span id="log-path" class="muted"></span>
+          </div>
+          <div class="term-body">
+            <pre class="term-out hidden" id="term-out"></pre>
+            <div class="term-xterm hidden" id="term-xterm"></div>
+          </div>
+          <div class="term-quick hidden" id="term-quick">
+            <input id="quick-input" type="text" placeholder="待发送的命令，回车发送…" autocomplete="off" spellcheck="false">
+            <select id="quick-eol" title="行尾">
+              <option value="crlf" selected>CRLF</option>
+              <option value="lf">LF</option>
+              <option value="cr">CR</option>
+              <option value="none">无行尾</option>
+            </select>
+            <button class="primary" id="quick-send">发送</button>
+            <button class="ghost-btn" id="quick-save">存为预置</button>
+          </div>
+          <div class="quick-presets hidden" id="quick-presets"></div>
+          <div class="term-send" id="term-send">
             <select id="send-enc" title="发送编码">
               <option value="utf8">文本</option>
               <option value="hex">HEX</option>
@@ -258,7 +289,9 @@
             <button class="ghost-btn" id="svc-edit">编辑</button>
             <button class="ghost-btn danger" id="svc-del">删除</button>
           </div>
-          <div class="svc-body">
+
+          <!-- 通用服务：指标 / 槽位 / 最近活动 -->
+          <div class="svc-body" id="svc-body-generic">
             <div class="svc-metrics" id="svc-metrics"></div>
             <div class="svc-block">
               <h3>监听槽位</h3>
@@ -267,6 +300,34 @@
             <div class="svc-block">
               <h3>最近活动</h3>
               <div id="svc-recent"></div>
+            </div>
+          </div>
+
+          <!-- syslog 服务：整页日志查看器 -->
+          <div class="svc-logview hidden" id="svc-syslog-block">
+            <div class="logview-toolbar">
+              <div class="sev-chips" id="svc-sev-chips">
+                <button type="button" class="chip active" data-sev="all">全部</button>
+                <button type="button" class="chip sev-0" data-sev="0">emerg</button>
+                <button type="button" class="chip sev-1" data-sev="1">alert</button>
+                <button type="button" class="chip sev-2" data-sev="2">crit</button>
+                <button type="button" class="chip sev-3" data-sev="3">err</button>
+                <button type="button" class="chip sev-4" data-sev="4">warning</button>
+                <button type="button" class="chip sev-5" data-sev="5">notice</button>
+                <button type="button" class="chip sev-6" data-sev="6">info</button>
+                <button type="button" class="chip sev-7" data-sev="7">debug</button>
+              </div>
+              <input id="svc-log-search" class="logview-search" type="search" placeholder="搜索主机、tag 或内容…">
+              <button class="ghost-btn" id="svc-log-pause">暂停</button>
+              <button class="ghost-btn" id="svc-log-clear">清空</button>
+            </div>
+            <div class="logview-body" id="svc-syslog-list"></div>
+            <div class="logview-status">
+              <span id="svc-syslog-count">0 条</span>
+              <span class="muted" id="svc-log-shown"></span>
+              <span class="muted" id="svc-log-rate"></span>
+              <span class="spacer"></span>
+              <label class="check inline"><input type="checkbox" id="svc-syslog-follow" checked> 自动滚动</label>
             </div>
           </div>
         </section>
@@ -300,6 +361,9 @@
         <button type="button" class="proto-tile" data-proto="speedtest">
           <span class="badge-ico b-spd">SPD</span><span class="tile-name">测速</span>
         </button>
+        <button type="button" class="proto-tile" data-proto="syslog">
+          <span class="badge-ico b-sys">SYS</span><span class="tile-name">Syslog</span>
+        </button>
       </div>
       <select id="f-proto" class="hidden" tabindex="-1" aria-hidden="true">
         <option value="raw-tcp">原始 TCP</option>
@@ -309,6 +373,7 @@
         <option value="tftp">TFTP 服务端</option>
         <option value="http">HTTP 服务端</option>
         <option value="speedtest">LibreSpeed 测速</option>
+        <option value="syslog">Syslog 服务器</option>
       </select>
 
       <div class="group">
@@ -322,8 +387,12 @@
             <span>端口</span>
             <input id="f-port" type="number" min="0" max="65535" value="9000">
           </label>
+          <label class="field w110 hidden" id="wrap-port2">
+            <span>TCP 端口</span>
+            <input id="f-port2" type="number" min="0" max="65535" value="6514">
+          </label>
         </div>
-        <label class="check"><input type="checkbox" id="f-echo"> 把收到的数据原样回给对端（HTTP 勾选时返回请求内容）</label>
+        <label class="check" id="echo-opt"><input type="checkbox" id="f-echo"> 把收到的数据原样回给对端（HTTP 勾选时返回请求内容）</label>
       </div>
 
       <div class="group">
@@ -484,6 +553,7 @@
           </label>
           <button type="button" class="ghost-btn" id="s-refresh-ports">刷新</button>
         </div>
+        <div class="field-hint" id="s-serial-hint"></div>
         <div class="row">
           <label class="field w110">
             <span>数据位</span>
@@ -539,11 +609,13 @@
             <span>私钥路径（可选，留空用密码）</span>
             <input id="s-ssh-key" type="text" placeholder="C:\Users\me\.ssh\id_rsa">
           </label>
+          <button type="button" class="ghost-btn" id="btn-pick-key">浏览…</button>
         </div>
         <label class="check"><input type="checkbox" id="s-ssh-compat"> 兼容老算法（ssh-rsa / group1-sha1 / aes-cbc）</label>
       </div>
 
       <div class="dialog-actions">
+        <span class="form-error" id="s-error"></span>
         <span class="spacer"></span>
         <button type="button" class="ghost-btn" id="s-cancel">取消</button>
         <button type="button" class="primary" id="s-create">创建会话</button>
@@ -552,7 +624,21 @@
   </dialog>
 
   <div id="toast" class="toast hidden"></div>
+  <div class="ctx-menu hidden" id="term-menu">
+    <button data-act="copy">复制</button>
+    <button data-act="paste">粘贴</button>
+    <button data-act="selectall">全选</button>
+    <div class="ctx-sep"></div>
+    <button data-act="search">搜索…</button>
+    <button data-act="clear">清空屏幕</button>
+    <div class="ctx-sep"></div>
+    <button data-act="toggle-clear" class="ctx-check"><i></i>清屏时滚到底部</button>
+    <button data-act="toggle-key" class="ctx-check"><i></i>按键时滚到底部</button>
+  </div>
 
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/addon-fit.js"></script>
+  <script src="/vendor/xterm/addon-search.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
