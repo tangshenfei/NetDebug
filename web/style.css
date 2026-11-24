@@ -226,16 +226,78 @@ body {
 .metric b { font-size: 20px; font-family: var(--mono); color: var(--text); font-weight: 600; }
 .svc-block h3 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 0 0 8px; }
 
-/* syslog 服务详情页的内嵌日志流 */
-.svc-syslog-head { display: flex; align-items: center; gap: 10px; }
-.svc-syslog-head .check.inline { margin: 0; font-size: 11px; }
-.svc-syslog-list {
-  max-height: 42vh; overflow-y: auto;
-  border: 1px solid var(--line); border-radius: 8px;
-  padding: 4px 6px; background: var(--bg-elev);
+/* ---------- syslog 日志查看器（借鉴 Grafana Loki Explore / Graylog 的布局） ----------
+ * 详情页在 syslog 协议下切换成整页日志视图：顶部级别过滤 + 搜索，
+ * 中间全高等宽日志流，底部状态栏。通用服务的指标卡/槽位/最近活动全部让位。 */
+.svc-view.syslog-mode #svc-body-generic { display: none; }
+.svc-view.syslog-mode #svc-log-open { display: none; }
+.svc-view.syslog-mode .svc-logview { display: flex; }
+
+.svc-logview { display: none; flex-direction: column; flex: 1; min-height: 0; }
+.logview-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--bg-elev);
 }
-.svc-syslog-list .log-row.syslog { grid-template-columns: 62px 58px minmax(110px, 170px) 1fr; }
-.svc-syslog-list .conn-note { padding: 14px 8px; }
+.sev-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip {
+  font: inherit; font-size: 11px; line-height: 1.6; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  cursor: pointer; user-select: none;
+}
+.chip:hover { border-color: rgba(255,255,255,.28); color: var(--text); }
+.chip.active { background: rgba(88,166,255,.14); border-color: rgba(88,166,255,.55); color: #9ecbff; }
+.chip.sev-0.active { background: rgba(255,92,92,.16); border-color: rgba(255,92,92,.6); color: #ff8a8a; }
+.chip.sev-1.active { background: rgba(255,123,123,.16); border-color: rgba(255,123,123,.6); color: #ff9a9a; }
+.chip.sev-2.active { background: rgba(255,157,107,.16); border-color: rgba(255,157,107,.6); color: #ffb894; }
+.chip.sev-3.active { background: rgba(255,180,84,.16); border-color: rgba(255,180,84,.6); color: #ffc978; }
+.chip.sev-4.active { background: rgba(227,201,92,.16); border-color: rgba(227,201,92,.6); color: #ecd880; }
+.chip.sev-5.active { background: rgba(127,184,255,.16); border-color: rgba(127,184,255,.6); color: #a8ceff; }
+.chip.sev-6.active { background: rgba(160,170,185,.16); border-color: rgba(160,170,185,.55); color: #c3ccd8; }
+.chip.sev-7.active { background: rgba(120,130,145,.16); border-color: rgba(120,130,145,.55); color: #9aa5b4; }
+
+.logview-search {
+  flex: 1; min-width: 150px; max-width: 320px;
+  font: inherit; font-size: 12px; padding: 4px 9px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text); outline: none;
+}
+.logview-search:focus { border-color: rgba(88,166,255,.6); }
+.logview-search::placeholder { color: var(--muted); }
+
+.logview-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  font-family: var(--mono); font-size: 12px;
+  padding: 3px 6px 8px;
+}
+.lv-row {
+  display: grid; grid-template-columns: 62px 58px minmax(90px, 168px) 1fr;
+  gap: 10px; padding: 2px 8px; border-radius: 4px; align-items: baseline;
+}
+.lv-row:hover { background: rgba(255,255,255,.045); }
+.lv-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.lv-sev { font-size: 11px; font-weight: 600; }
+.lv-host { color: #a8ceff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-host .lv-tag { color: var(--muted); }
+.lv-text { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.lv-row.sev-0 .lv-sev, .lv-row.sev-0 .lv-text { color: #ff8a8a; }
+.lv-row.sev-1 .lv-sev, .lv-row.sev-1 .lv-text { color: #ff9a9a; }
+.lv-row.sev-2 .lv-sev, .lv-row.sev-2 .lv-text { color: #ffb894; }
+.lv-row.sev-3 .lv-sev, .lv-row.sev-3 .lv-text { color: #ffc978; }
+.lv-row.sev-4 .lv-sev { color: #ecd880; }
+.lv-row.sev-5 .lv-sev { color: #a8ceff; }
+.lv-row.sev-6 .lv-sev { color: var(--muted); }
+.lv-row.sev-7 .lv-sev, .lv-row.sev-7 .lv-text { color: #8b95a3; }
+
+.logview-body .conn-note { padding: 24px 12px; font-size: 12px; color: var(--muted); }
+
+.logview-status {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 14px; border-top: 1px solid var(--line);
+  background: var(--bg-elev); font-size: 11px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.logview-status .check.inline { margin: 0; font-size: 11px; }
+
 .slot-row {
   display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
   padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px;

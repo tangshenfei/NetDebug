@@ -1602,8 +1602,11 @@ int nd_api_handle(void *vreq)
                                                     nd_syslog_severity_name(recs[i].sev));
                             cJSON_AddStringToObject(o, "fac_name",
                                                     nd_syslog_facility_name(recs[i].fac));
+                            cJSON_AddStringToObject(o, "host", recs[i].host);
+                            cJSON_AddStringToObject(o, "tag", recs[i].tag);
                             cJSON_AddStringToObject(o, "peer", recs[i].peer);
                             cJSON_AddStringToObject(o, "text", recs[i].text);
+                            cJSON_AddStringToObject(o, "body", recs[i].body);
                             cJSON_AddItemToArray(arr, o);
                         }
                         nd_http_json(req->fd, 200, arr);

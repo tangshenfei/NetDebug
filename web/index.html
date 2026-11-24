@@ -289,25 +289,45 @@
             <button class="ghost-btn" id="svc-edit">编辑</button>
             <button class="ghost-btn danger" id="svc-del">删除</button>
           </div>
-          <div class="svc-body">
+
+          <!-- 通用服务：指标 / 槽位 / 最近活动 -->
+          <div class="svc-body" id="svc-body-generic">
             <div class="svc-metrics" id="svc-metrics"></div>
             <div class="svc-block">
               <h3>监听槽位</h3>
               <div id="svc-slots"></div>
             </div>
-            <div class="svc-block hidden" id="svc-syslog-block">
-              <h3 class="svc-syslog-head">
-                <span>Syslog 日志</span>
-                <span class="muted" id="svc-syslog-count"></span>
-                <span class="spacer"></span>
-                <label class="check inline"><input type="checkbox" id="svc-syslog-follow" checked> 自动滚动</label>
-                <button class="ghost-btn" id="svc-syslog-clear">清空</button>
-              </h3>
-              <div class="svc-syslog-list" id="svc-syslog-list"></div>
-            </div>
             <div class="svc-block">
               <h3>最近活动</h3>
               <div id="svc-recent"></div>
+            </div>
+          </div>
+
+          <!-- syslog 服务：整页日志查看器 -->
+          <div class="svc-logview hidden" id="svc-syslog-block">
+            <div class="logview-toolbar">
+              <div class="sev-chips" id="svc-sev-chips">
+                <button type="button" class="chip active" data-sev="all">全部</button>
+                <button type="button" class="chip sev-0" data-sev="0">emerg</button>
+                <button type="button" class="chip sev-1" data-sev="1">alert</button>
+                <button type="button" class="chip sev-2" data-sev="2">crit</button>
+                <button type="button" class="chip sev-3" data-sev="3">err</button>
+                <button type="button" class="chip sev-4" data-sev="4">warning</button>
+                <button type="button" class="chip sev-5" data-sev="5">notice</button>
+                <button type="button" class="chip sev-6" data-sev="6">info</button>
+                <button type="button" class="chip sev-7" data-sev="7">debug</button>
+              </div>
+              <input id="svc-log-search" class="logview-search" type="search" placeholder="搜索主机、tag 或内容…">
+              <button class="ghost-btn" id="svc-log-pause">暂停</button>
+              <button class="ghost-btn" id="svc-log-clear">清空</button>
+            </div>
+            <div class="logview-body" id="svc-syslog-list"></div>
+            <div class="logview-status">
+              <span id="svc-syslog-count">0 条</span>
+              <span class="muted" id="svc-log-shown"></span>
+              <span class="muted" id="svc-log-rate"></span>
+              <span class="spacer"></span>
+              <label class="check inline"><input type="checkbox" id="svc-syslog-follow" checked> 自动滚动</label>
             </div>
           </div>
         </section>

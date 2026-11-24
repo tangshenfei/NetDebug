@@ -453,25 +453,52 @@ beginCase('syslog 服务：双绑定、级别着色与计数');
   check(slotTypes.includes('udp'), '槽位带 UDP 类型');
   check(slotTypes.includes('tcp'), '槽位带 TCP 类型');
 
-  /* 详情页渲染的槽位标签 */
+  /* 详情页：syslog 专属整页日志视图 */
   await p.ev(`(() => {
     const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('UI 测试 Syslog'));
     c.click();
   })()`);
   await sleep(900);
-  const badges = await p.ev("[...document.querySelectorAll('#svc-slots .slot-type')].map(e => e.textContent)");
-  check(badges.includes('UDP') && badges.includes('TCP'), `槽位显示 UDP/TCP 徽标（实际 ${badges.join(',')}）`);
+  check(await p.ev("document.getElementById('svc-view').classList.contains('syslog-mode')"), '进入 syslog 整页布局');
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-body-generic')).display === 'none'"),
+    '通用指标区隐藏'
+  );
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-syslog-block')).display === 'flex'"),
+    '日志视图铺满'
+  );
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-log-open')).display === 'none'"),
+    '活动日志按钮在 syslog 下隐藏'
+  );
+  const meta = await p.ev("document.getElementById('svc-meta').textContent");
+  check(/UDP :\d+/.test(meta) && /TCP :\d+/.test(meta), `顶栏标明 UDP/TCP（实际 ${meta}）`);
 
-  /* 详情页内嵌 syslog 日志：历史回放 3 条 */
-  check(await p.ev("!document.getElementById('svc-syslog-block').classList.contains('hidden')"), 'syslog 区块可见');
-  const replay = await p.ev("document.querySelectorAll('#svc-syslog-list .log-row.syslog').length");
+  /* 历史回放 3 条 */
+  const replay = await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length");
   check(replay === 3, `详情页回放 3 条（实际 ${replay}）`);
   const replayTxt = await p.ev("document.getElementById('svc-syslog-list').innerText");
   check(replayTxt.includes('ui-emerg') && replayTxt.includes('ui-info'), '回放内容完整');
-  /* 清空按钮 */
-  await p.ev("document.getElementById('svc-syslog-clear').click()");
+
+  /* 级别过滤：emerg 只剩 1 条 */
+  await p.ev(`document.querySelector('#svc-sev-chips .chip[data-sev="0"]').click()`);
+  await sleep(400);
+  check(await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length === 1"), '级别过滤 emerg 只剩 1 条');
+  await p.ev(`document.querySelector('#svc-sev-chips .chip[data-sev="all"]').click()`);
+  await sleep(400);
+
+  /* 搜索过滤 */
+  await p.ev(`(() => { const e=document.getElementById('svc-log-search'); e.value='ui-warn'; e.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+  await sleep(400);
+  check(await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length === 1"), '搜索过滤只剩 1 条');
+  await p.ev(`(() => { const e=document.getElementById('svc-log-search'); e.value=''; e.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+  await sleep(300);
+
+  /* 清空 */
+  await p.ev("document.getElementById('svc-log-clear').click()");
   await sleep(700);
-  check(await p.ev("document.querySelectorAll('#svc-syslog-list .log-row.syslog').length === 0"), '清空后详情页没有行');
+  check(await p.ev("document.querySelectorAll('#svc-syslog-list .lv-row').length === 0"), '清空后详情页没有行');
   check((await api(`/api/services/${svc.id}/syslog`)).length === 0, '清空后后端环形缓冲为空');
 
   await p.ev(`(() => {

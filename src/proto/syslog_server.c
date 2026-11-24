@@ -352,8 +352,11 @@ void nd_syslog_handle(nd_service *s, const nd_addr *peer, const char *raw, size_
     cJSON_AddNumberToObject(o, "fac", m.facility);
     cJSON_AddStringToObject(o, "sev_name", nd_syslog_severity_name(m.severity));
     cJSON_AddStringToObject(o, "fac_name", nd_syslog_facility_name(m.facility));
+    cJSON_AddStringToObject(o, "host", m.host);
+    cJSON_AddStringToObject(o, "tag", m.tag);
     cJSON_AddStringToObject(o, "peer", peer_buf);
     cJSON_AddStringToObject(o, "text", text);
+    cJSON_AddStringToObject(o, "body", m.severity >= 0 ? m.body : text);
     cJSON_AddNumberToObject(o, "ts", (double)nd_wall_ms());
     json = cJSON_PrintUnformatted(o);
     if (json) {
@@ -370,8 +373,14 @@ void nd_syslog_handle(nd_service *s, const nd_addr *peer, const char *raw, size_
             r->ts = nd_wall_ms();
             r->sev = m.severity;
             r->fac = m.facility;
+            nd_strlcpy(r->host, m.host, sizeof(r->host));
+            nd_strlcpy(r->tag, m.tag, sizeof(r->tag));
             nd_strlcpy(r->peer, peer_buf, sizeof(r->peer));
             nd_strlcpy(r->text, text, sizeof(r->text));
+            if (m.severity >= 0)
+                nd_strlcpy(r->body, m.body, sizeof(r->body));
+            else
+                nd_strlcpy(r->body, text, sizeof(r->body));
             s->syslog_head = (s->syslog_head + 1) % ND_SYSLOG_RING;
             if (s->syslog_count < ND_SYSLOG_RING)
                 s->syslog_count++;

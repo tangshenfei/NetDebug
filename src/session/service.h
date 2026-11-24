@@ -18,8 +18,11 @@ typedef struct nd_syslog_rec {
     uint64_t ts;
     int      sev;
     int      fac;
-    char     peer[64];
-    char     text[ND_SYSLOG_TEXT];
+    char     host[64];   /* 设备主机名（可能为空） */
+    char     tag[48];    /* tag / app-name */
+    char     peer[64];   /* 来源地址 */
+    char     text[ND_SYSLOG_TEXT];  /* "host tag: body" 完整可读文本 */
+    char     body[ND_SYSLOG_TEXT];  /* 仅消息体，详情页分列显示用 */
 } nd_syslog_rec;
 
 typedef struct nd_service {

@@ -727,7 +727,7 @@
     if (!tabs.length) return;
     for (const tab of tabs) {
       if (tab.kind === 'svc') {
-        /* 详情页的 syslog 区块：实时追加 */
+        /* 详情页的 syslog 流：暂停时不重绘，但继续收进缓冲区 */
         if (m.t === 'syslog_msg' && tab.svcId === m.svc) {
           if (!tab.syslog) tab.syslog = [];
           tab.syslog.push({
@@ -736,11 +736,18 @@
             fac: m.fac,
             sev_name: m.sev_name,
             fac_name: m.fac_name,
+            host: m.host,
+            tag: m.tag,
             peer: m.peer,
             text: m.text,
+            body: m.body,
           });
           if (tab.syslog.length > 500) tab.syslog.shift();
-          if (state.activeTab === tab.id) paintSvcSyslog(tab);
+          if (!tab.syslogMarks) tab.syslogMarks = [];
+          tab.syslogMarks.push(Date.now());
+          if (tab.syslogMarks.length > 400) tab.syslogMarks.splice(0, 200);
+          if (state.activeTab === tab.id && !tab.syslogPaused) paintSvcSyslogSoon(tab);
+          continue;
         }
         schedulePaint(tab);
         continue;
@@ -834,6 +841,9 @@
     return `${s}s`;
   }
 
+  /* ---------- syslog 日志查看器（详情页整页模式） ---------- */
+
+  /* 活动日志标签页里的一行 */
   function syslogRowHtml(r) {
     const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
     return `<div class="log-row syslog sev-${sev}">
@@ -844,7 +854,29 @@
     </div>`;
   }
 
-  /* 详情页的 syslog 日志块：历史回放 + 实时追加 */
+  /* 详情页日志流的一行：时间 | 级别 | 主机/tag | 消息体 */
+  function lvRowHtml(r) {
+    const sev = r.sev != null && r.sev >= 0 ? r.sev : 'x';
+    const host = r.host || (r.peer ? r.peer.split(':')[0] : '-');
+    const tag = r.tag ? `<span class="lv-tag"> ${h(r.tag)}</span>` : '';
+    return `<div class="lv-row sev-${sev}">
+      <span class="lv-time">${fmtClock(r.ts)}</span>
+      <span class="lv-sev">${h(r.sev_name || '?')}</span>
+      <span class="lv-host">${h(host)}${tag}</span>
+      <span class="lv-text">${h(r.body != null ? r.body : r.text || '')}</span>
+    </div>`;
+  }
+
+  function syslogPass(r, tab) {
+    if (tab.syslogSev && tab.syslogSev !== 'all' && String(r.sev) !== String(tab.syslogSev))
+      return false;
+    const q = (tab.syslogQuery || '').trim().toLowerCase();
+    if (!q) return true;
+    const hay = `${r.host || ''} ${r.tag || ''} ${r.text || ''} ${r.peer || ''} ${r.sev_name || ''}`.toLowerCase();
+    return hay.includes(q);
+  }
+
+  /* 历史回放（打开详情页时拉一次环形缓冲） */
   async function loadSvcSyslog(tab) {
     try {
       const rows = await api(`/api/services/${tab.svcId}/syslog`);
@@ -855,22 +887,61 @@
     if (state.activeTab === tab.id) paintSvcSyslog(tab);
   }
 
+  /* 节流重绘：设备洪泛时最多每 100ms 重建一次列表 */
+  const syslogPaintAt = new Map();
+  function paintSvcSyslogSoon(tab) {
+    const now = Date.now();
+    if (now - (syslogPaintAt.get(tab.id) || 0) < 100) return;
+    syslogPaintAt.set(tab.id, now);
+    paintSvcSyslog(tab);
+  }
+
   function paintSvcSyslog(tab) {
     const block = $('#svc-syslog-block');
     if (!block) return;
     const svc = state.services.find((s) => s.id === tab.svcId);
-    const isSyslog = !!svc && svc.proto === 'syslog';
-    block.classList.toggle('hidden', !isSyslog);
-    if (!isSyslog) return;
-    const rows = tab.syslog || [];
-    $('#svc-syslog-count').textContent = rows.length
-      ? `${rows.length} 条${rows.length >= 500 ? '（仅最近 500 条）' : ''}`
-      : '';
+    if (!svc || svc.proto !== 'syslog') return;
+
+    /* 暂停时冻结到按下暂停那一刻的快照 */
+    const all = tab.syslog || [];
+    const view = tab.syslogPaused && tab.syslogFrozenAt != null
+      ? all.slice(0, tab.syslogFrozenAt)
+      : all;
+    const rows = view.filter((r) => syslogPass(r, tab));
+    const cap = 800;
+    const shown = rows.length > cap ? rows.slice(-cap) : rows;
     const list = $('#svc-syslog-list');
-    list.innerHTML = rows.length
-      ? rows.map(syslogRowHtml).join('')
-      : '<div class="conn-note">还没有收到日志。把设备的 syslog 指向本机后，消息会实时出现在这里。</div>';
-    if ($('#svc-syslog-follow').checked) list.scrollTop = list.scrollHeight;
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+
+    list.innerHTML = shown.length
+      ? shown.map(lvRowHtml).join('')
+      : all.length
+        ? '<div class="conn-note">没有符合条件的日志，试试放宽级别过滤或清空搜索词。</div>'
+        : '<div class="conn-note">还没有收到日志。把设备的 syslog 指向本机后，消息会实时出现在这里。</div>';
+
+    $('#svc-syslog-count').textContent = `${all.length} 条`;
+    $('#svc-log-shown').textContent =
+      rows.length !== view.length ? `显示 ${rows.length} 条` : '';
+    if (tab.syslogPaused)
+      $('#svc-log-shown').textContent += ' · 已暂停';
+    $('#svc-log-rate').textContent = syslogRateText(tab);
+    $('#svc-log-pause').textContent = tab.syslogPaused ? '继续' : '暂停';
+    $('#svc-log-pause').classList.toggle('active', !!tab.syslogPaused);
+
+    if ($('#svc-syslog-follow').checked && (atBottom || tab.syslogForceScroll)) {
+      list.scrollTop = list.scrollHeight;
+    }
+    tab.syslogForceScroll = false;
+  }
+
+  /* 近 5 秒到达速率 */
+  function syslogRateText(tab) {
+    const marks = tab.syslogMarks || [];
+    const now = Date.now();
+    const recent = marks.filter((t) => now - t < 5000).length;
+    tab.syslogMarks = marks.filter((t) => now - t < 5000);
+    if (!recent) return '';
+    return `${(recent / 5).toFixed(1)} 条/秒`;
   }
 
   function openServiceDetail(svcId) {
@@ -898,7 +969,10 @@
 
   function paintServiceDetail(tab) {
     const svc = state.services.find((s) => s.id === tab.svcId);
+    const view = $('#svc-view');
     if (!svc) {
+      view.classList.remove('syslog-mode');
+      $('#svc-syslog-block').classList.add('hidden');
       $('#svc-title').textContent = '服务已删除';
       $('#svc-badge').textContent = '—';
       $('#svc-badge').className = 'svc-badge';
@@ -908,6 +982,10 @@
       $('#svc-recent').innerHTML = '';
       return;
     }
+    const isSyslog = svc.proto === 'syslog';
+    view.classList.toggle('syslog-mode', isSyslog);
+    $('#svc-syslog-block').classList.toggle('hidden', !isSyslog);
+
     const title = `服务 · ${svc.name}`;
     if (tab.title !== title) {
       tab.title = title;
@@ -916,8 +994,22 @@
     $('#svc-title').textContent = svc.name;
     $('#svc-badge').textContent = svc.running ? '运行中' : '已停止';
     $('#svc-badge').className = 'svc-badge' + (svc.running ? ' on' : '');
-    $('#svc-meta').textContent = `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
+    $('#svc-meta').textContent = isSyslog
+      ? `Syslog · ${bindLabel(svc.bind)} · UDP :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`
+      : `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
     $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
+
+    /* syslog 走整页日志视图，通用指标/槽位/最近活动都不渲染 */
+    if (isSyslog) {
+      const sev = tab.syslogSev || 'all';
+      [...document.querySelectorAll('#svc-sev-chips .chip')].forEach((c) =>
+        c.classList.toggle('active', c.dataset.sev === sev)
+      );
+      if (document.activeElement !== $('#svc-log-search'))
+        $('#svc-log-search').value = tab.syslogQuery || '';
+      paintSvcSyslog(tab);
+      return;
+    }
 
     const slots = svc.slots || [];
     const okSlots = slots.filter((x) => x.ok).length;
@@ -929,7 +1021,6 @@
       ['运行时长', svc.running ? fmtUptime(svc.uptime_ms) : '—'],
       ['监听槽位', slots.length ? `${okSlots} / ${slots.length}` : '—'],
     ];
-    if (svc.proto === 'syslog') metrics.splice(2, 0, ['日志条数', String(svc.syslog_msgs || 0)]);
     $('#svc-metrics').innerHTML = metrics
       .map(([k, v]) => `<div class="metric"><span>${h(k)}</span><b>${h(v)}</b></div>`)
       .join('');
@@ -950,7 +1041,6 @@
         : '<div class="conn-note">这个服务没有监听槽位</div>';
 
     $('#svc-recent').innerHTML = recentRowsHtml(svc.id);
-    paintSvcSyslog(tab);
   }
 
   // ---------- 终端 ----------
@@ -2746,11 +2836,39 @@
   });
 
   /* 详情页 syslog 区块：自动滚动与清空 */
+  /* 详情页 syslog 查看器：级别过滤、搜索、暂停、清空、自动滚动 */
   $('#svc-syslog-follow').addEventListener('change', () => {
     const tab = activeTab();
     if (tab && tab.kind === 'svc') paintSvcSyslog(tab);
   });
-  $('#svc-syslog-clear').addEventListener('click', async () => {
+  $('#svc-sev-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogSev = btn.dataset.sev;
+    [...document.querySelectorAll('#svc-sev-chips .chip')].forEach((c) =>
+      c.classList.toggle('active', c === btn)
+    );
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-search').addEventListener('input', (e) => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogQuery = e.target.value;
+    tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-pause').addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.syslogPaused = !tab.syslogPaused;
+    tab.syslogFrozenAt = tab.syslogPaused ? (tab.syslog || []).length : null;
+    if (!tab.syslogPaused) tab.syslogForceScroll = true;
+    paintSvcSyslog(tab);
+  });
+  $('#svc-log-clear').addEventListener('click', async () => {
     const tab = activeTab();
     if (!tab || tab.kind !== 'svc') return;
     try {
@@ -2759,6 +2877,7 @@
       toast(errText(e));
     }
     tab.syslog = [];
+    tab.syslogForceScroll = true;
     paintSvcSyslog(tab);
   });
 
