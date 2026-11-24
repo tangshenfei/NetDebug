@@ -364,9 +364,11 @@ static void syslog_append(nd_service *s, const char *raw, size_t len)
         }
     }
     if (s->syslog_file) {
-        /* 统一 CRLF：Windows 记事本/大部分编辑器都认，
-         * 裸 \n 在记事本里会把整个文件显示成一行。
-         * 行缓冲会在最后的 \r\n 处自动刷出，无需再 fflush。 */
+        /* Windows 记事本需要 CRLF，裸 \n 会把整个文件显示成一行；
+         * Linux 写 LF 即可，写 CRLF 反而会在 vim/less 里出现 ^M。
+         * 必须显式 fflush：Windows CRT 的行缓冲对普通文件不会按行刷出，
+         * 不刷的话消息会憋到文件关闭才落盘（tail -f 看不到实时内容）。 */
+#ifdef _WIN32
         size_t i;
         for (i = 0; i < len; i++) {
             if (raw[i] == '\n')
@@ -375,6 +377,11 @@ static void syslog_append(nd_service *s, const char *raw, size_t len)
                 fputc(raw[i], s->syslog_file);
         }
         fputs("\r\n", s->syslog_file);
+#else
+        fwrite(raw, 1, len, s->syslog_file);
+        fputc('\n', s->syslog_file);
+#endif
+        fflush(s->syslog_file);
     }
     nd_mutex_unlock(&s->syslog_lock);
 }
