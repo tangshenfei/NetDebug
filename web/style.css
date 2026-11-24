@@ -233,6 +233,12 @@ body {
 .slot-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
 .slot-row.ok .dot { background: #3fb950; }
 .slot-row.bad .dot { background: #f85149; }
+.slot-row .slot-type {
+  flex: 0 0 auto; font-size: 10px; font-weight: 600; letter-spacing: .4px;
+  padding: 1px 6px; border-radius: 4px; border: 1px solid;
+}
+.slot-row .slot-type.udp { color: #7ee2a8; border-color: rgba(126,226,168,.45); background: rgba(126,226,168,.08); }
+.slot-row .slot-type.tcp { color: #79b8ff; border-color: rgba(121,184,255,.45); background: rgba(121,184,255,.08); }
 .slot-row .addr { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slot-row .why { color: var(--muted); font-size: 11px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-row {

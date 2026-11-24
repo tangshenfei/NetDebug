@@ -155,12 +155,15 @@ int nd_syslog_parse(const char *raw, size_t len, nd_syslog_msg *m)
         }
     }
 
-    /* RFC 3164：可选 "Mmm dd hh:mm:ss "，然后 host tag[pid]: body */
+    /* RFC 3164：可选 "Mmm dd hh:mm:ss "，然后 host tag[pid]: body
+     * 注意日期可能是一位数、前面补空格：Jan  1 / Jan 11，两种都要认 */
     {
         const char *q = p;
         size_t ql = left;
-        /* 尝试跳过时间戳：形如 "Oct 11 22:14:15 " */
-        if (ql > 16 && p[3] == ' ' && digits(p + 4, 2) && p[6] == ' ' &&
+        int day_ok = (p[4] == ' ' && p[5] >= '0' && p[5] <= '9') ||
+                     digits(p + 4, 2);
+        /* 形如 "Oct 11 22:14:15 " */
+        if (ql > 16 && p[3] == ' ' && day_ok && p[6] == ' ' &&
             digits(p + 7, 2) && p[9] == ':' && digits(p + 10, 2) &&
             p[12] == ':' && digits(p + 13, 2) && p[15] == ' ') {
             size_t tl = 16;
@@ -289,8 +292,16 @@ static void syslog_append(nd_service *s, const char *raw, size_t len)
         }
     }
     if (s->syslog_file) {
-        fwrite(raw, 1, len, s->syslog_file);
-        fputc('\n', s->syslog_file);
+        /* 统一 CRLF：Windows 记事本/大部分编辑器都认，
+         * 裸 \n 在记事本里会把整个文件显示成一行 */
+        size_t i;
+        for (i = 0; i < len; i++) {
+            if (raw[i] == '\n')
+                fputs("\r\n", s->syslog_file);
+            else if (raw[i] != '\r')
+                fputc(raw[i], s->syslog_file);
+        }
+        fputs("\r\n", s->syslog_file);
         fflush(s->syslog_file);
     }
     nd_mutex_unlock(&s->syslog_lock);

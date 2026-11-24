@@ -41,7 +41,7 @@ static int json_int(cJSON *o, const char *key, int def)
     return (v && cJSON_IsNumber(v)) ? v->valueint : def;
 }
 
-static void add_slots(cJSON *o, const nd_plan *p)
+static void add_slots(cJSON *o, const nd_plan *p, const char *transport)
 {
     /* 已有 slots 数组就追加（syslog 双监听：UDP 主 + TCP 副） */
     cJSON *arr = cJSON_GetObjectItemCaseSensitive(o, "slots");
@@ -60,6 +60,7 @@ static void add_slots(cJSON *o, const nd_plan *p)
             snprintf(hint, sizeof(hint), "%s", nd_error_str(p->slot[i].err));
         }
         cJSON_AddStringToObject(s, "addr", a);
+        cJSON_AddStringToObject(s, "transport", transport ? transport : "tcp");
         cJSON_AddBoolToObject(s, "ok", p->slot[i].fd >= 0);
         cJSON_AddNumberToObject(s, "code", p->slot[i].err);
         cJSON_AddNumberToObject(s, "sys_errno", p->slot[i].sys_errno);
@@ -127,9 +128,9 @@ static cJSON *service_json(nd_service *s)
     if (s->last_error[0])
         cJSON_AddStringToObject(o, "last_error", s->last_error);
     if (s->plan.n)
-        add_slots(o, &s->plan);
+        add_slots(o, &s->plan, s->bind.type == SOCK_DGRAM ? "udp" : "tcp");
     if (s->plan2.n)
-        add_slots(o, &s->plan2);
+        add_slots(o, &s->plan2, "tcp");
     return o;
 }
 
@@ -1014,7 +1015,7 @@ static void test_bind(int fd, nd_http_req *req)
     cJSON_AddNumberToObject(o, "code", rc);
     if (rc != ND_OK)
         cJSON_AddStringToObject(o, "message", nd_error_str(rc));
-    add_slots(o, &plan);
+    add_slots(o, &plan, plan.spec.type == SOCK_DGRAM ? "udp" : "tcp");
     nd_plan_close(&plan);
     nd_http_json(fd, 200, o); /* 测试成功执行；能否绑定看 ok 字段 */
     cJSON_Delete(o);
@@ -1551,7 +1552,7 @@ int nd_api_handle(void *vreq)
                     cJSON_AddStringToObject(o, "message", nd_error_str(rc));
                     cJSON_AddStringToObject(o, "detail", err);
                     if (s->plan.n)
-                        add_slots(o, &s->plan);
+                        add_slots(o, &s->plan, s->bind.type == SOCK_DGRAM ? "udp" : "tcp");
                     nd_http_json(req->fd, 409, o);
                     cJSON_Delete(o);
                 } else {

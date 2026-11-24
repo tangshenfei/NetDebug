@@ -445,10 +445,27 @@ beginCase('syslog 服务：双绑定、级别着色与计数');
   })()`);
   await sleep(350);
 
-  /* 服务详情：日志条数指标 */
+  /* 服务详情：日志条数指标、槽位带传输类型 */
   const svc2 = await api(`/api/services/${svc.id}`);
   check(svc2.syslog_msgs === 3, `syslog_msgs = 3（实际 ${svc2.syslog_msgs}）`);
   check(svc2.bind2 && svc2.bind2.port === 19315, 'bind2 端口正确');
+  const slotTypes = (svc2.slots || []).map((x) => x.transport);
+  check(slotTypes.includes('udp'), '槽位带 UDP 类型');
+  check(slotTypes.includes('tcp'), '槽位带 TCP 类型');
+
+  /* 详情页渲染的槽位标签 */
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('UI 测试 Syslog'));
+    c.click();
+  })()`);
+  await sleep(700);
+  const badges = await p.ev("[...document.querySelectorAll('#svc-slots .slot-type')].map(e => e.textContent)");
+  check(badges.includes('UDP') && badges.includes('TCP'), `槽位显示 UDP/TCP 徽标（实际 ${badges.join(',')}）`);
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('UI 测试 Syslog'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(350);
 
   /* 清理 */
   await api(`/api/services/${svc.id}`, { method: 'DELETE' });

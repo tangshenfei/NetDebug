@@ -893,6 +893,7 @@
             .map(
               (x) => `<div class="slot-row ${x.ok ? 'ok' : 'bad'}">
                 <span class="dot"></span>
+                <span class="slot-type ${x.transport === 'udp' ? 'udp' : 'tcp'}">${(x.transport || 'tcp').toUpperCase()}</span>
                 <span class="addr">${h(x.addr || '')}</span>
                 <span class="why">${x.ok ? '监听中' : h(x.hint || '绑定失败')}</span>
               </div>`

@@ -38,6 +38,24 @@ static void suite_proto_syslog(void)
     }
     END_CASE();
 
+    BEGIN_CASE("RFC3164 一位数日期（Jan  1 双空格）");
+    {
+        const char *raw = "<34>Jan  1 08:13:33 host1 skapid: STAF DB hit mac:00:0c:29";
+        CHECK(nd_syslog_parse(raw, strlen(raw), &m) == 0);
+        CHECK_INT(m.facility, 4);
+        CHECK_INT(m.severity, 2);
+        CHECK_STR(m.ts, "Jan  1 08:13:33");
+        CHECK_STR(m.host, "host1");
+        CHECK_STR(m.tag, "skapid");
+        CHECK_STR(m.body, "STAF DB hit mac:00:0c:29");
+
+        const char *raw2 = "<13>Jan 11 22:14:15 host2 kernel: two digit day";
+        CHECK(nd_syslog_parse(raw2, strlen(raw2), &m) == 0);
+        CHECK_STR(m.host, "host2");
+        CHECK_STR(m.tag, "kernel");
+    }
+    END_CASE();
+
     BEGIN_CASE("无 PRI / 非法 PRI 降级为原文");
     {
         const char *raw = "plain text without pri";
