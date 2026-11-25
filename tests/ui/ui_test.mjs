@@ -515,12 +515,12 @@ endCase();
 beginCase('服务详情页：指标、槽位与操作');
 {
   await p.ev(`(() => {
-    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('HTTP'));
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('FTP 文件服务'));
     c.click();
   })()`);
   await sleep(800);
   check(await p.ev("!document.getElementById('svc-view').classList.contains('hidden')"), '详情视图打开');
-  eq(await p.ev("document.getElementById('svc-title').textContent"), 'HTTP 文件服务', '标题是服务名');
+  eq(await p.ev("document.getElementById('svc-title').textContent"), 'FTP 文件服务', '标题是服务名');
 
   const metrics = await p.ev(
     "[...document.querySelectorAll('#svc-metrics .metric')].map(m => m.innerText.replace(/\\s+/g,' ').trim())"
@@ -528,16 +528,15 @@ beginCase('服务详情页：指标、槽位与操作');
   check(metrics.some((m) => m.includes('峰值并发')), '有峰值并发指标');
   check(metrics.some((m) => m.includes('运行时长')), '有运行时长指标');
   check(metrics.some((m) => m.includes('监听槽位')), '有槽位数量指标');
+  check(!metrics.some((m) => m.includes('累计请求')), 'FTP 不显示 HTTP 专属的累计请求');
   check(await p.ev("document.querySelectorAll('#svc-slots .slot-row').length > 0"), '槽位列表非空');
   check(await p.ev("document.querySelector('#svc-slots .slot-row.ok') !== null"), '槽位显示为正常状态');
 
-  await p.ev("fetch('http://127.0.0.1:19102/hello.txt', { mode: 'no-cors' }).catch(() => 0)");
-  await sleep(1000);
-  const req = await p.ev(
-    "[...document.querySelectorAll('#svc-metrics .metric')].find(m => m.innerText.includes('累计请求')).querySelector('b').textContent"
-  );
-  check(Number(req) > 0, `累计请求随流量增加（当前 ${req}）`);
-  check((await p.ev("document.querySelectorAll('#svc-recent .recent-row').length")) > 0, '最近活动有记录');
+  /* 配置摘要：FTP 应露出根目录与被动端口 */
+  const cfgTxt = await p.ev("document.getElementById('svc-config').innerText");
+  check(cfgTxt.includes('根目录'), '配置区显示根目录');
+  check(cfgTxt.includes('被动端口'), 'FTP 配置区显示被动端口范围');
+  check(await p.ev("document.querySelectorAll('#svc-config .cfg-row').length >= 3"), '配置条目不少于 3 条');
 
   await p.ev("document.getElementById('svc-toggle').click()");
   await sleep(1300);
@@ -563,6 +562,64 @@ beginCase('服务详情页：指标、槽位与操作');
     await sleep(350);
   }
   check(await p.ev("document.querySelectorAll('#tabs .tab').length === 0"), '关闭后标签无残留');
+}
+endCase();
+
+beginCase('HTTP 请求日志视图：状态码、过滤与清空');
+{
+  await p.ev(`(() => {
+    const c = [...document.querySelectorAll('#service-list .svc')].find((x) => x.innerText.includes('HTTP'));
+    c.click();
+  })()`);
+  await sleep(1000);
+  check(await p.ev("document.getElementById('svc-view').classList.contains('httplog-mode')"), '进入 HTTP 请求视图');
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-body-generic')).display === 'none'"),
+    '通用指标区在 HTTP 下隐藏'
+  );
+  check(
+    await p.ev("getComputedStyle(document.getElementById('svc-httplog-block')).display === 'flex'"),
+    '请求日志视图铺满'
+  );
+
+  /* 先制造 200 与 404 各一次 */
+  await p.ev("fetch('http://127.0.0.1:19102/hello.txt', { mode: 'no-cors' }).catch(() => 0)");
+  await sleep(700);
+  await p.ev("fetch('http://127.0.0.1:19102/definitely-missing.txt', { mode: 'no-cors' }).catch(() => 0)");
+  await sleep(900);
+
+  const rows = await p.ev(
+    "[...document.querySelectorAll('#svc-http-list .lv-row.http')].map(r => ({cls: r.className, status: r.querySelector('.lv-status').textContent, path: r.querySelector('.lv-path').textContent}))"
+  );
+  check(rows.length >= 2, `请求行至少 2 条（实际 ${rows.length}）`);
+  check(rows.some((r) => r.status === '404' && r.cls.includes('st-4')), '404 行按 4xx 着色');
+  check(rows.some((r) => r.status === '200' && r.cls.includes('st-2')), '200 行按 2xx 着色');
+  check(rows.some((r) => r.path.includes('definitely-missing')), '路径完整显示');
+
+  /* 状态码过滤 4xx */
+  await p.ev(`document.querySelector('#svc-status-chips .chip[data-st="4"]').click()`);
+  await sleep(500);
+  const only4 = await p.ev(
+    "[...document.querySelectorAll('#svc-http-list .lv-row.http')].map(r => r.querySelector('.lv-status').textContent)"
+  );
+  check(only4.length > 0 && only4.every((s) => s.startsWith('4')), '只显示 4xx');
+  await p.ev(`document.querySelector('#svc-status-chips .chip[data-st="all"]').click()`);
+  await sleep(400);
+
+  /* 清空 */
+  await p.ev("document.getElementById('svc-http-clear').click()");
+  await sleep(700);
+  check(await p.ev("document.querySelectorAll('#svc-http-list .lv-row.http').length === 0"), '清空后没有行');
+  check(
+    (await p.ev("document.getElementById('svc-http-list').innerText")).includes('还没有收到请求'),
+    '清空后回到空态'
+  );
+
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('HTTP'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(350);
 }
 endCase();
 
@@ -891,6 +948,78 @@ await setVal(p.ev, 'http-url', 'http://127.0.0.1:19102/nope.txt');
 await p.ev("document.getElementById('http-send').click()");
 await waitFor(p.ev, "document.getElementById('http-status').textContent.startsWith('404')");
 check((await p.ev("document.getElementById('http-status').textContent")).startsWith('404'), '404 状态');
+endCase();
+
+beginCase('会话详情页：连接信息与操作');
+{
+  /* 建会话 + 连到本机回显服务 */
+  const svc = await api('/api/services', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'UI 会话回显', proto: 'raw-tcp', echo: true,
+      bind: { kind: 'any', family: 'v4', port: 19106 },
+    }),
+  });
+  await api(`/api/services/${svc.id}/start`, { method: 'POST' });
+  const sess = await api('/api/sessions', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'UI 会话', transport: 'tcp', protocol: 'raw',
+      host: '127.0.0.1', port: 19106, family: 'v4',
+    }),
+  });
+  await api(`/api/sessions/${sess.id}/connect`, { method: 'POST' });
+  await sleep(900);
+  /* 触发前端刷新会话列表 */
+  await p.ev(`(() => { document.querySelector('#session-list')?.dispatchEvent(new Event('refresh')); })()`);
+  await sleep(3200);
+
+  /* 点「详情」 */
+  await p.ev(`(() => {
+    const b = [...document.querySelectorAll('#session-list button[data-sact="detail"]')]
+      .find(x => x.closest('.sess').innerText.includes('UI 会话'));
+    if (b) b.click();
+  })()`);
+  await sleep(1100);
+  check(await p.ev("!document.getElementById('sess-view').classList.contains('hidden')"), '会话详情视图打开');
+  eq(await p.ev("document.getElementById('sess-title').textContent"), 'UI 会话', '标题是会话名');
+  check((await p.ev("document.getElementById('sess-badge').textContent")) === '已连接', '徽章显示已连接');
+  const meta = await p.ev("document.getElementById('sess-meta').textContent");
+  check(meta.includes('127.0.0.1:19106'), `meta 显示目标地址（实际 ${meta}）`);
+  const metrics = await p.ev("[...document.querySelectorAll('#sess-metrics .metric')].map(m => m.innerText.replace(/\\s+/g,' ').trim())");
+  check(metrics.some((m) => m.includes('状态')), '指标有状态');
+  check(metrics.some((m) => m.includes('连接时长')), '指标有连接时长');
+  const infoTxt = await p.ev("document.getElementById('sess-info').innerText");
+  check(infoTxt.includes('协议') && infoTxt.includes('目标'), '连接信息有协议与目标');
+  check(infoTxt.includes('TCP'), '协议显示 TCP');
+
+  /* 打开终端 */
+  await p.ev("document.getElementById('sess-open').click()");
+  await sleep(1200);
+  check(
+    (await p.ev("[...document.querySelectorAll('#tabs .tab')].map(t => t.innerText)")).some((t) => t.includes('终端')),
+    '从详情页能打开终端'
+  );
+
+  /* 断开 */
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find(x => x.innerText.includes('会话'));
+    if (t) t.click();
+  })()`);
+  await sleep(600);
+  await p.ev("document.getElementById('sess-disconnect').click()");
+  await sleep(1200);
+  check((await p.ev("document.getElementById('sess-badge').textContent")) !== '已连接', '断开后徽章不再显示已连接');
+
+  /* 清理标签与服务 */
+  await p.ev(`(() => {
+    [...document.querySelectorAll('#tabs .tab')].forEach(t => { const c = t.querySelector('.tab-close'); if (c) c.click(); });
+  })()`);
+  await sleep(600);
+  await api(`/api/sessions/${sess.id}`, { method: 'DELETE' });
+  await api(`/api/services/${svc.id}`, { method: 'DELETE' });
+  await sleep(400);
+}
 endCase();
 
 beginCase('FTP 工具连接与列目录');

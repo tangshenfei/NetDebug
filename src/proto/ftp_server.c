@@ -2,8 +2,10 @@
 #include "core/log.h"
 #include "core/thread.h"
 #include "core/util.h"
+#include "httpd/ws.h"
 #include "platform/netio.h"
 #include "platform/platform.h"
+#include "session/service.h"
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -41,6 +43,43 @@ typedef struct {
     time_t    mtime;
     int       is_dir;
 } ftp_ent;
+
+/* 记录一次传输：WS 事件 + 服务环形缓冲 */
+static void ftp_note_xfer(uint64_t service_id, const nd_addr *peer, const char *dir,
+                          const char *name, long long bytes, uint64_t dur_ms)
+{
+    char peer_buf[96] = "";
+    char ev[512];
+    char name_esc[600];
+    nd_service *svc;
+
+    if (!service_id)
+        return;
+    if (peer && peer->family)
+        nd_addr_format(peer, 1, peer_buf, sizeof(peer_buf));
+    snprintf(ev, sizeof(ev),
+             "{\"t\":\"xfer\",\"svc\":%llu,\"proto\":\"ftp\",\"dir\":\"%s\","
+             "\"name\":\"%s\",\"bytes\":%lld,\"dur_ms\":%llu,\"peer\":\"%s\",\"ts\":%llu}",
+             (unsigned long long)service_id, dir, name, bytes, (unsigned long long)dur_ms,
+             peer_buf, (unsigned long long)nd_wall_ms());
+    nd_ws_event_json(ev);
+
+    svc = nd_service_get(service_id);
+    if (svc) {
+        nd_http_rec rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.ts = nd_wall_ms();
+        rec.dur_ms = (int)dur_ms;
+        rec.bytes = bytes;
+        nd_strlcpy(rec.kind, !strcmp(dir, "up") ? "ftp-up" : "ftp-down", sizeof(rec.kind));
+        nd_strlcpy(rec.method, !strcmp(dir, "up") ? "STOR" : "RETR", sizeof(rec.method));
+        nd_strlcpy(rec.path, name, sizeof(rec.path));
+        nd_strlcpy(rec.peer, peer_buf, sizeof(rec.peer));
+        nd_service_http_push(svc, &rec);
+        nd_service_put(svc);
+    }
+    (void)name_esc;
+}
 
 static void reply(int fd, int code, const char *fmt, ...)
 {
@@ -378,6 +417,8 @@ static void do_retr(ftp_sess *s, const char *virt)
     char err[128];
     FILE *fp;
     int dfd;
+    long long sent = 0;
+    uint64_t t0 = nd_monotonic_ms();
 
     real_path(s, virt, real, sizeof(real));
     fp = fopen(real, "rb");
@@ -399,11 +440,14 @@ static void do_retr(ftp_sess *s, const char *virt)
             break;
         if (nd_net_send_all(dfd, buf, n, 15000) != 0)
             break;
+        sent += (long long)n;
     }
     fclose(fp);
     nd_net_close(dfd);
     close_passive(s);
     reply(s->ctrl, 226, "Transfer complete");
+    ftp_note_xfer(s->cfg.service_id, &s->peer, "down", virt, sent,
+                  nd_monotonic_ms() - t0);
 }
 
 static void do_stor(ftp_sess *s, const char *virt, int append)
@@ -412,6 +456,8 @@ static void do_stor(ftp_sess *s, const char *virt, int append)
     char err[128];
     FILE *fp;
     int dfd;
+    long long got = 0;
+    uint64_t t0 = nd_monotonic_ms();
 
     if (s->cfg.readonly) {
         reply(s->ctrl, 550, "只读模式，禁止写入");
@@ -435,6 +481,7 @@ static void do_stor(ftp_sess *s, const char *virt, int append)
         int r = nd_net_recv_some(dfd, buf, sizeof(buf), 15000);
         if (r > 0) {
             fwrite(buf, 1, (size_t)r, fp);
+            got += (long long)r;
             continue;
         }
         if (r == -2)
@@ -445,6 +492,7 @@ static void do_stor(ftp_sess *s, const char *virt, int append)
     nd_net_close(dfd);
     close_passive(s);
     reply(s->ctrl, 226, "Transfer complete");
+    ftp_note_xfer(s->cfg.service_id, &s->peer, "up", virt, got, nd_monotonic_ms() - t0);
 }
 
 static int need_auth(ftp_sess *s)
@@ -633,15 +681,27 @@ static void session_loop(ftp_sess *s)
                 continue;
             }
             {
-                char ip[64];
+                /* RFC 959：227 响应里必须是 h1,h2,h3,h4,p1,p2 六段逗号分隔数字，
+                 * 标准客户端（ftplib / FileZilla / 资源管理器）按这个解析，
+                 * 写成点分 IP 会被判为非法响应。 */
+                unsigned a = 0, b = 0, c = 0, d = 0;
                 const char *adv = s->cfg.advertise[0] ? s->cfg.advertise : NULL;
-                if (adv)
-                    nd_strlcpy(ip, adv, sizeof(ip));
-                else
-                    snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
-                             s->local.raw[0], s->local.raw[1], s->local.raw[2], s->local.raw[3]);
-                reply(s->ctrl, 227, "Entering Passive Mode (%s,%u,%u)", ip,
-                      s->pasv_local.port >> 8, s->pasv_local.port & 255);
+                if (adv) {
+                    if (sscanf(adv, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) {
+                        a = s->local.raw[0];
+                        b = s->local.raw[1];
+                        c = s->local.raw[2];
+                        d = s->local.raw[3];
+                    }
+                } else {
+                    a = s->local.raw[0];
+                    b = s->local.raw[1];
+                    c = s->local.raw[2];
+                    d = s->local.raw[3];
+                }
+                reply(s->ctrl, 227, "Entering Passive Mode (%u,%u,%u,%u,%u,%u)", a, b, c, d,
+                      (unsigned)(s->pasv_local.port >> 8),
+                      (unsigned)(s->pasv_local.port & 255));
             }
         } else if (!strcmp(cmd, "EPSV")) {
             char err[128];

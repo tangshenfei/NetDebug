@@ -14,6 +14,7 @@ typedef struct {
     uint16_t pasv_min;
     uint16_t pasv_max;
     char     advertise[64];
+    uint64_t service_id; /* 传输记录归属的服务，0 = 不记录 */
 } nd_ftp_srv_cfg;
 
 /* 接管 fd，创建独立线程处理控制连接；返回 0 成功 */

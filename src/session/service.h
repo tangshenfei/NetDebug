@@ -25,6 +25,20 @@ typedef struct nd_syslog_rec {
     char     body[ND_SYSLOG_TEXT];  /* 仅消息体，详情页分列显示用 */
 } nd_syslog_rec;
 
+/* HTTP 请求 / FTP·TFTP 传输记录环形缓冲：服务详情页回放用 */
+#define ND_HTTP_RING 500
+
+typedef struct nd_http_rec {
+    uint64_t    ts;
+    int         status;     /* HTTP 状态码；FTP/TFTP 传输为 0 */
+    int         dur_ms;
+    long long   bytes;      /* FTP/TFTP 传输字节数 */
+    char        kind[12];   /* "http" / "ftp-up" / "ftp-down" / "tftp-up" / "tftp-down" */
+    char        method[12]; /* HTTP 方法；FTP/TFTP 为 RETR/STOR/RRQ/WRQ */
+    char        path[256];  /* HTTP 路径；FTP/TFTP 为文件名 */
+    char        peer[64];
+} nd_http_rec;
+
 typedef struct nd_service {
     uint64_t      id;
     char          name[64];
@@ -44,6 +58,9 @@ typedef struct nd_service {
     nd_syslog_rec syslog_ring[ND_SYSLOG_RING];
     size_t        syslog_head;   /* 下一个写入位置 */
     size_t        syslog_count;  /* 有效条数 */
+    nd_http_rec   http_ring[ND_HTTP_RING];
+    size_t        http_head;
+    size_t        http_count;
 
     nd_thread     th_accept;
     atomic_int    refs;
@@ -106,5 +123,11 @@ void  nd_service_detach_conn(uint64_t service_id, nd_conn *c);
 size_t nd_service_syslog_snapshot(nd_service *s, nd_syslog_rec *out,
                                   size_t cap, int skip_last);
 void   nd_service_syslog_clear(nd_service *s);
+
+/* HTTP 请求记录：快照（时间顺序）与清空 */
+size_t nd_service_http_snapshot(nd_service *s, nd_http_rec *out, size_t cap);
+void   nd_service_http_clear(nd_service *s);
+/* 追加一条 HTTP 请求记录（http_server.c 调用；内部加锁） */
+void   nd_service_http_push(nd_service *s, const nd_http_rec *r);
 
 #endif /* ND_SERVICE_H */

@@ -194,6 +194,7 @@ static void *accept_thread(void *arg)
                         nd_strlcpy(cfg.root, s->tftp_root, sizeof(cfg.root));
                         cfg.readonly = s->tftp_readonly;
                         cfg.timeout_s = s->tftp_timeout;
+                        cfg.service_id = s->id;
                         nd_tftp_server_start(fds[i].fd, &laddr, &peer, buf, (size_t)rn, &cfg);
                         continue;
                     }
@@ -232,6 +233,7 @@ static void *accept_thread(void *arg)
                     cfg.pasv_min = s->pasv_min;
                     cfg.pasv_max = s->pasv_max;
                     nd_strlcpy(cfg.advertise, s->ftp_advertise, sizeof(cfg.advertise));
+                    cfg.service_id = s->id;
                     if (nd_ftp_server_start(cfd, &peer, &local, &cfg) != 0)
                         nd_net_close(cfd);
                     continue;
@@ -557,5 +559,51 @@ void nd_service_syslog_clear(nd_service *s)
     nd_mutex_lock(&s->syslog_lock);
     s->syslog_head = 0;
     s->syslog_count = 0;
+    nd_mutex_unlock(&s->syslog_lock);
+}
+
+/* ---------- HTTP 请求记录环形缓冲 ---------- */
+
+void nd_service_http_push(nd_service *s, const nd_http_rec *r)
+{
+    if (!s || !r || !s->syslog_lock_init)
+        return;
+    nd_mutex_lock(&s->syslog_lock);
+    s->http_ring[s->http_head] = *r;
+    s->http_head = (s->http_head + 1) % ND_HTTP_RING;
+    if (s->http_count < ND_HTTP_RING)
+        s->http_count++;
+    nd_mutex_unlock(&s->syslog_lock);
+}
+
+size_t nd_service_http_snapshot(nd_service *s, nd_http_rec *out, size_t cap)
+{
+    size_t n = 0, i;
+
+    if (!s || !out || !cap || !s->syslog_lock_init)
+        return 0;
+
+    nd_mutex_lock(&s->syslog_lock);
+    {
+        size_t want = s->http_count;
+        if (want > cap)
+            want = cap;
+        for (i = 0; i < want; i++) {
+            size_t back = want - 1 - i; /* 0 = 最新 */
+            size_t idx = (s->http_head + ND_HTTP_RING - 1 - back) % ND_HTTP_RING;
+            out[n++] = s->http_ring[idx];
+        }
+    }
+    nd_mutex_unlock(&s->syslog_lock);
+    return n;
+}
+
+void nd_service_http_clear(nd_service *s)
+{
+    if (!s || !s->syslog_lock_init)
+        return;
+    nd_mutex_lock(&s->syslog_lock);
+    s->http_head = 0;
+    s->http_count = 0;
     nd_mutex_unlock(&s->syslog_lock);
 }

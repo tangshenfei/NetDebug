@@ -2,7 +2,10 @@
 #include "core/log.h"
 #include "core/thread.h"
 #include "core/util.h"
+#include "httpd/ws.h"
 #include "platform/netio.h"
+#include "platform/platform.h"
+#include "session/service.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +29,51 @@ typedef struct {
 
 static uint16_t get16(const unsigned char *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 static void put16(unsigned char *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+
+/* 取路径最后一段 */
+static const char *base_name(const char *p)
+{
+    const char *last = p;
+    for (; p && *p; p++)
+        if (*p == '/' || *p == '\\')
+            last = p + 1;
+    return last;
+}
+
+/* 记录一次传输：WS 事件 + 服务环形缓冲 */
+static void tftp_note_xfer(tftp_job *j, const char *dir, const char *name,
+                           long long bytes, uint64_t dur_ms)
+{
+    char peer_buf[96] = "";
+    char ev[512];
+    nd_service *svc;
+
+    if (!j || !j->cfg.service_id)
+        return;
+    if (j->peer.family)
+        nd_addr_format(&j->peer, 1, peer_buf, sizeof(peer_buf));
+    snprintf(ev, sizeof(ev),
+             "{\"t\":\"xfer\",\"svc\":%llu,\"proto\":\"tftp\",\"dir\":\"%s\","
+             "\"name\":\"%s\",\"bytes\":%lld,\"dur_ms\":%llu,\"peer\":\"%s\",\"ts\":%llu}",
+             (unsigned long long)j->cfg.service_id, dir, name, bytes,
+             (unsigned long long)dur_ms, peer_buf, (unsigned long long)nd_wall_ms());
+    nd_ws_event_json(ev);
+
+    svc = nd_service_get(j->cfg.service_id);
+    if (svc) {
+        nd_http_rec rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.ts = nd_wall_ms();
+        rec.dur_ms = (int)dur_ms;
+        rec.bytes = bytes;
+        nd_strlcpy(rec.kind, !strcmp(dir, "up") ? "tftp-up" : "tftp-down", sizeof(rec.kind));
+        nd_strlcpy(rec.method, !strcmp(dir, "up") ? "WRQ" : "RRQ", sizeof(rec.method));
+        nd_strlcpy(rec.path, name, sizeof(rec.path));
+        nd_strlcpy(rec.peer, peer_buf, sizeof(rec.peer));
+        nd_service_http_push(svc, &rec);
+        nd_service_put(svc);
+    }
+}
 
 static size_t put_str(unsigned char *p, size_t cap, const char *s)
 {
@@ -176,6 +224,8 @@ static void do_rrq(tftp_job *j, int fd, const char *file, const tftp_opts *o)
     nd_addr peer = j->peer;
     int blk = 0;
     int use_oack = o->has_blksize || o->has_timeout || o->has_tsize;
+    uint64_t t0 = nd_monotonic_ms();
+    long long sent = 0;
 
     if (!fp) {
         error_pkt(fd, &peer, 1, "File not found");
@@ -223,10 +273,12 @@ static void do_rrq(tftp_job *j, int fd, const char *file, const tftp_opts *o)
         }
         if (!acked)
             break;
+        sent += (long long)n;
         if (n < (size_t)o->blksize)
             break;
     }
     fclose(fp);
+    tftp_note_xfer(j, "down", base_name(file), sent, nd_monotonic_ms() - t0);
 }
 
 static void do_wrq(tftp_job *j, int fd, const char *file, const tftp_opts *o)
@@ -237,6 +289,8 @@ static void do_wrq(tftp_job *j, int fd, const char *file, const tftp_opts *o)
     FILE *fp;
     uint16_t expect = 1;
     int use_oack = o->has_blksize || o->has_timeout || o->has_tsize;
+    uint64_t t0 = nd_monotonic_ms();
+    long long got = 0;
 
     if (j->cfg.readonly) {
         error_pkt(fd, &peer, 2, "Access violation");
@@ -285,6 +339,7 @@ static void do_wrq(tftp_job *j, int fd, const char *file, const tftp_opts *o)
                 error_pkt(fd, &peer, 3, "Disk full");
                 break;
             }
+            got += (long long)dlen;
             ack[0] = 0;
             ack[1] = OP_ACK;
             put16(ack + 2, blk);
@@ -295,6 +350,7 @@ static void do_wrq(tftp_job *j, int fd, const char *file, const tftp_opts *o)
         }
     }
     fclose(fp);
+    tftp_note_xfer(j, "up", base_name(file), got, nd_monotonic_ms() - t0);
 }
 
 static void *job_thread(void *arg)

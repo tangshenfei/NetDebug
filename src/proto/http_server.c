@@ -37,7 +37,13 @@ typedef struct {
 typedef struct {
     char method[16];
     char target[256];
+    int  status;   /* 响应状态码，0 = 未记录 */
 } http_req_info;
+
+/* send_head 是所有响应的唯一收口（错误、OPTIONS、echo 都经它），
+ * 用线程局部变量把状态码带回 handle_request。serve_file 成功路径自写响应头，
+ * 在写头前显式记录。 */
+static _Thread_local int t_last_status;
 
 static atomic_uint_fast64_t g_req_seq;
 
@@ -276,7 +282,9 @@ static int send_head(int fd, int status, const char *reason, const char *ctype,
                      long long length, int head_only)
 {
     char head[768];
-    int n = snprintf(head, sizeof(head),
+    int n;
+    t_last_status = status;
+    n = snprintf(head, sizeof(head),
                      "HTTP/1.1 %d %s\r\n"
                      "Server: NetDebug\r\n"
                      "Content-Type: %s\r\n"
@@ -350,6 +358,7 @@ static void serve_file(int fd, const char *file, int head_only)
     if (size < 0)
         size = 0;
     rewind(f);
+    t_last_status = 200; /* 此路径自写响应头，不经 send_head */
 
     hlen = snprintf(head, sizeof(head),
                     "HTTP/1.1 200 OK\r\n"
@@ -877,6 +886,7 @@ static void send_speedtest_download(int fd, const char *target, int head_only)
                     "Connection: close\r\n"
                     "\r\n",
                     total);
+    t_last_status = 200; /* speedtest 自写响应头 */
     if (hlen <= 0 || nd_net_send_all(fd, head, (size_t)hlen, 5000) != 0)
         return;
     if (head_only)
@@ -951,6 +961,7 @@ static void handle_request(int fd, uint64_t service_id, const nd_http_srv_cfg *c
     char file[2048];
     int head_only = 0;
 
+    t_last_status = 0;
     if (!read_request(fd, raw, sizeof(raw), &raw_len)) {
         send_error(fd, 408, "Request Timeout", "request header timeout", 0);
         return;
@@ -1041,17 +1052,31 @@ static void *http_thread(void *arg)
 
     nd_net_set_nodelay(job->fd);
     handle_request(job->fd, job->service_id, &job->cfg, &info);
+    info.status = t_last_status; /* 覆盖所有提前返回路径 */
     nd_net_close(job->fd);
 
     if (job->svc) {
         json_escape(target_esc, sizeof(target_esc), info.target);
         snprintf(ev, sizeof(ev),
                  "{\"t\":\"req_end\",\"svc\":%llu,\"seq\":%llu,\"peer\":\"%s\",\"method\":\"%s\","
-                 "\"path\":\"%s\",\"dur_ms\":%llu,\"ts\":%llu}",
+                 "\"path\":\"%s\",\"status\":%d,\"dur_ms\":%llu,\"ts\":%llu}",
                  (unsigned long long)job->service_id, (unsigned long long)seq, peer, info.method,
-                 target_esc, (unsigned long long)(nd_monotonic_ms() - t0),
+                 target_esc, info.status,
+                 (unsigned long long)(nd_monotonic_ms() - t0),
                  (unsigned long long)nd_wall_ms());
         nd_ws_event_json(ev);
+        /* 写进服务的请求环形缓冲，详情页打开时回放 */
+        {
+            nd_http_rec rec;
+            memset(&rec, 0, sizeof(rec));
+            rec.ts = nd_wall_ms();
+            rec.status = info.status;
+            rec.dur_ms = (int)(nd_monotonic_ms() - t0);
+            nd_strlcpy(rec.method, info.method, sizeof(rec.method));
+            nd_strlcpy(rec.path, info.target, sizeof(rec.path));
+            nd_strlcpy(rec.peer, peer, sizeof(rec.peer));
+            nd_service_http_push(job->svc, &rec);
+        }
         atomic_fetch_sub(&job->svc->http_active, 1);
         nd_service_put(job->svc);
     }

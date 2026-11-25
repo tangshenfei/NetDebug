@@ -230,6 +230,11 @@ body {
  * 详情页在 syslog 协议下切换成整页日志视图：顶部级别过滤 + 搜索，
  * 中间全高等宽日志流，底部状态栏。通用服务的指标卡/槽位/最近活动全部让位。 */
 .svc-view.syslog-mode #svc-body-generic { display: none; }
+.svc-view.syslog-mode #svc-httplog-block { display: none; }
+.svc-view.httplog-mode #svc-body-generic { display: none; }
+.svc-view.httplog-mode #svc-syslog-block { display: none; }
+.svc-view.httplog-mode #svc-log-open { display: none; }
+.svc-view.httplog-mode .svc-logview#svc-httplog-block { display: flex; }
 .svc-view.syslog-mode #svc-log-open { display: none; }
 .svc-view.syslog-mode .svc-logview { display: flex; }
 
@@ -290,6 +295,26 @@ body {
 
 .logview-body .conn-note { padding: 24px 12px; font-size: 12px; color: var(--muted); }
 
+/* HTTP 请求行：时间 | 方法 | 状态 | 路径 | 耗时 | 来源 */
+.lv-row.http {
+  grid-template-columns: 62px 46px 40px minmax(0, 1fr) 58px minmax(90px, 150px);
+}
+.lv-row.http .lv-method { color: #a8ceff; font-weight: 600; }
+.lv-row.http .lv-status { font-weight: 600; }
+.lv-row.http .lv-path { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-row.http .lv-dur { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.lv-row.http .lv-peer { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-row.http.st-2 .lv-status { color: #56d364; }
+.lv-row.http.st-3 .lv-status { color: #a8ceff; }
+.lv-row.http.st-4 .lv-status { color: #ffc978; }
+.lv-row.http.st-5 .lv-status { color: #ff8a8a; }
+.lv-row.http.st-5 .lv-path { color: #ffb4b4; }
+.lv-row.http.st-0 .lv-status { color: var(--muted); }
+.chip.st-2xx.active { background: rgba(86,211,100,.16); border-color: rgba(86,211,100,.6); color: #7ee787; }
+.chip.st-3xx.active { background: rgba(127,184,255,.16); border-color: rgba(127,184,255,.6); color: #a8ceff; }
+.chip.st-4xx.active { background: rgba(255,180,84,.16); border-color: rgba(255,180,84,.6); color: #ffc978; }
+.chip.st-5xx.active { background: rgba(255,92,92,.16); border-color: rgba(255,92,92,.6); color: #ff8a8a; }
+
 .logview-status {
   display: flex; align-items: center; gap: 12px;
   padding: 6px 14px; border-top: 1px solid var(--line);
@@ -297,6 +322,37 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .logview-status .check.inline { margin: 0; font-size: 11px; }
+
+/* 详情页「传输记录」区块（FTP / TFTP） */
+.svc-xfer-head { display: flex; align-items: center; gap: 10px; }
+.svc-xfer-list {
+  max-height: 34vh; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 6px; background: var(--bg-elev);
+  font-family: var(--mono); font-size: 12px;
+}
+.xfer-row {
+  display: grid; grid-template-columns: 62px 52px minmax(0, 1fr) 76px 62px minmax(90px, 140px);
+  gap: 10px; padding: 3px 8px; border-radius: 4px; align-items: baseline;
+}
+.xfer-row:hover { background: rgba(255,255,255,.045); }
+.xfer-row .x-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.xfer-row .x-dir { font-size: 11px; font-weight: 600; }
+.xfer-row .x-dir.up { color: #7ee787; }
+.xfer-row .x-dir.down { color: #a8ceff; }
+.xfer-row .x-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xfer-row .x-bytes, .xfer-row .x-dur { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.xfer-row .x-peer { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc-xfer-list .conn-note { padding: 18px 10px; font-size: 12px; color: var(--muted); }
+
+/* 详情页「配置」区块 */
+.cfg-row {
+  display: flex; gap: 12px; padding: 5px 10px; border-radius: 6px;
+  font-size: 12px; border: 1px solid var(--line); background: var(--bg-elev);
+  margin-bottom: 6px; font-family: var(--mono);
+}
+.cfg-row .cfg-key { color: var(--muted); flex: 0 0 96px; }
+.cfg-row .cfg-val { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .slot-row {
   display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
@@ -542,6 +598,12 @@ input::placeholder { color: #59636f; }
 .http-bar select { width: 110px; flex: 0 0 auto; }
 .http-bar input { flex: 1 1 160px; min-width: 0; font-family: var(--mono); }
 .http-bar button { flex: 0 0 auto; }
+/* 工具页固定宽度输入框（端口、凭据等），避免各页写 inline style */
+.http-bar input.w90 { flex: 0 0 90px; }
+.http-bar input.w110 { flex: 0 0 110px; }
+.http-bar input.w120 { flex: 0 0 120px; }
+.http-bar input.w140 { flex: 0 0 140px; }
+.http-bar input.w150 { flex: 0 0 150px; }
 .http-opts { display: flex; align-items: center; gap: 16px; font-size: 12px; }
 .http-opts input[type="number"] { width: 88px; }
 .http-status.ok { color: var(--green); }

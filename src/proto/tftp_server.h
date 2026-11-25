@@ -6,9 +6,10 @@
 #include <stddef.h>
 
 typedef struct {
-    char root[512];
-    int  readonly;
-    int  timeout_s;
+    char     root[512];
+    int      readonly;
+    int      timeout_s;
+    uint64_t service_id; /* 传输记录归属的服务，0 = 不记录 */
 } nd_tftp_cfg;
 
 /* 处理一个 RRQ/WRQ 请求：内部创建独立线程和传输套接字，立即返回 */
