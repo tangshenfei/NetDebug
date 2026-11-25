@@ -1627,6 +1627,49 @@ int nd_api_handle(void *vreq)
                 nd_service_put(s);
                 return 1;
             }
+            /* HTTP/speedtest 最近请求记录：GET 回放 / DELETE 清空 */
+            if (!strcmp(rest, "/reqlog") && (is_get || is_delete)) {
+                if (!strcmp(s->proto, "http") || !strcmp(s->proto, "speedtest")) {
+                    if (is_get) {
+                        nd_http_rec *recs =
+                            (nd_http_rec *)malloc(ND_HTTP_RING * sizeof(*recs));
+                        cJSON *arr;
+                        size_t n;
+                        if (!recs) {
+                            nd_http_error_json(req->fd, 500, ND_E_INTERNAL, "out of memory");
+                            nd_service_put(s);
+                            return 1;
+                        }
+                        n = nd_service_http_snapshot(s, recs, ND_HTTP_RING);
+                        arr = cJSON_CreateArray();
+                        for (size_t i = 0; i < n; i++) {
+                            cJSON *o = cJSON_CreateObject();
+                            cJSON_AddNumberToObject(o, "ts", (double)recs[i].ts);
+                            cJSON_AddNumberToObject(o, "status", recs[i].status);
+                            cJSON_AddNumberToObject(o, "dur_ms", recs[i].dur_ms);
+                            cJSON_AddStringToObject(o, "method", recs[i].method);
+                            cJSON_AddStringToObject(o, "path", recs[i].path);
+                            cJSON_AddStringToObject(o, "peer", recs[i].peer);
+                            cJSON_AddItemToArray(arr, o);
+                        }
+                        nd_http_json(req->fd, 200, arr);
+                        cJSON_Delete(arr);
+                        free(recs);
+                    } else {
+                        nd_service_http_clear(s);
+                        {
+                            cJSON *o = cJSON_CreateObject();
+                            cJSON_AddBoolToObject(o, "ok", 1);
+                            nd_http_json(req->fd, 200, o);
+                            cJSON_Delete(o);
+                        }
+                    }
+                } else {
+                    nd_http_error_json(req->fd, 400, ND_E_PARAM, "该服务不是 http/speedtest");
+                }
+                nd_service_put(s);
+                return 1;
+            }
             if (!strcmp(rest, "/connections") && is_get) {
                 uint64_t cids[512];
                 size_t n = nd_conn_list(id, cids, 512);

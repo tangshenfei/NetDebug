@@ -234,8 +234,9 @@
       if (active && active.kind === 'log') schedulePaint(active);
       else if (active && active.kind === 'svc') {
         const svc = state.services.find((s) => s.id === active.svcId);
-        /* syslog 详情页只更新顶栏状态，日志区由消息流自己增量刷新 */
-        if (svc && svc.proto === 'syslog') paintSvcHeader(active);
+        /* 日志型详情页只更新顶栏状态，日志区由事件流自己增量刷新 */
+        if (svc && (svc.proto === 'syslog' || svc.proto === 'http' || svc.proto === 'speedtest'))
+          paintSvcHeader(active);
         else schedulePaint(active);
       }
     } catch (e) {
@@ -786,6 +787,26 @@
           if (state.activeTab === tab.id && !tab.syslogPaused) paintSvcSyslogSoon(tab);
           continue;
         }
+        /* 详情页的 HTTP 请求流：req_end 一次性成行 */
+        if (m.t === 'req_end' && tab.svcId === m.svc) {
+          if (!tab.reqlog) tab.reqlog = [];
+          tab.reqSeq = (tab.reqSeq || 0) + 1;
+          tab.reqlog.push({
+            seq: tab.reqSeq,
+            ts: m.ts,
+            status: m.status,
+            dur_ms: m.dur_ms,
+            method: m.method,
+            path: m.path,
+            peer: m.peer,
+          });
+          if (tab.reqlog.length > 500) tab.reqlog.shift();
+          if (!tab.reqMarks) tab.reqMarks = [];
+          tab.reqMarks.push(Date.now());
+          if (tab.reqMarks.length > 400) tab.reqMarks.splice(0, 200);
+          if (state.activeTab === tab.id && !tab.reqPaused) paintSvcHttpLogSoon(tab);
+          continue;
+        }
         schedulePaint(tab);
         continue;
       }
@@ -1028,10 +1049,126 @@
     return `${(recent / 5).toFixed(1)} 条/秒`;
   }
 
+  /* ---------- HTTP / 测速服务：请求日志视图 ---------- */
+
+  function httpRowHtml(r) {
+    const st = Math.floor((r.status || 0) / 100);
+    const dur = r.dur_ms != null ? (r.dur_ms >= 1000 ? (r.dur_ms / 1000).toFixed(2) + 's' : r.dur_ms + 'ms') : '';
+    return `<div class="lv-row http st-${st}" data-seq="${r.seq || 0}">
+      <span class="lv-time">${fmtClock(r.ts)}</span>
+      <span class="lv-method">${h(r.method || '-')}</span>
+      <span class="lv-status">${r.status || '—'}</span>
+      <span class="lv-path">${h(r.path || '')}</span>
+      <span class="lv-dur">${h(dur)}</span>
+      <span class="lv-peer">${h((r.peer || '-').replace(/:\d+$/, ''))}</span>
+    </div>`;
+  }
+
+  function httpPass(r, tab) {
+    const st = tab.reqStatus && tab.reqStatus !== 'all' ? String(tab.reqStatus) : '';
+    const q = (tab.reqQuery || '').trim().toLowerCase();
+    if (!st && !q) return true;
+    if (st && String(Math.floor((r.status || 0) / 100)) !== st) return false;
+    if (!q) return true;
+    const hay = `${r.method || ''} ${r.path || ''} ${r.peer || ''} ${r.status || ''}`.toLowerCase();
+    return hay.includes(q);
+  }
+
+  async function loadSvcHttpLog(tab) {
+    try {
+      const rows = await api(`/api/services/${tab.svcId}/reqlog`);
+      tab.reqlog = Array.isArray(rows) ? rows : [];
+      tab.reqSeq = tab.reqlog.length;
+      tab.reqlog.forEach((r, i) => {
+        r.seq = i + 1;
+      });
+    } catch (e) {
+      tab.reqlog = [];
+      tab.reqSeq = 0;
+    }
+    tab.reqPaintSeq = 0;
+    if (state.activeTab === tab.id) paintSvcHttpLog(tab, true);
+  }
+
+  const httpPaintAt = new Map();
+  function paintSvcHttpLogSoon(tab) {
+    const now = Date.now();
+    if (now - (httpPaintAt.get(tab.id) || 0) < 200) return;
+    httpPaintAt.set(tab.id, now);
+    paintSvcHttpLog(tab);
+  }
+
+  function paintSvcHttpLog(tab, rebuild) {
+    const block = $('#svc-http-list');
+    if (!block) return;
+    const svc = state.services.find((s) => s.id === tab.svcId);
+    if (!svc || (svc.proto !== 'http' && svc.proto !== 'speedtest')) return;
+
+    const all = tab.reqlog || [];
+    const view = tab.reqPaused && tab.reqFrozenAt != null ? all.slice(0, tab.reqFrozenAt) : all;
+    const rows = view.filter((r) => httpPass(r, tab));
+    const cap = 800;
+    const shown = rows.length > cap ? rows.slice(-cap) : rows;
+    const list = block;
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    const key = `${tab.reqStatus || 'all'}|${tab.reqQuery || ''}`;
+    const prevSeq = tab.reqPaintSeq || 0;
+    const lastSeq = shown.length ? shown[shown.length - 1].seq || 0 : 0;
+    const firstSeq = shown.length ? shown[0].seq || 0 : 0;
+
+    const canAppend =
+      !rebuild && key === tab.reqPaintKey && list.children.length > 0 &&
+      lastSeq > prevSeq && shown.length - list.children.length <= 200;
+
+    if (canAppend) {
+      while (list.firstChild && Number(list.firstChild.dataset.seq || 0) < firstSeq)
+        list.removeChild(list.firstChild);
+      const frag = document.createDocumentFragment();
+      for (const r of shown) {
+        if ((r.seq || 0) <= prevSeq) continue;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = httpRowHtml(r);
+        if (wrap.firstChild) frag.appendChild(wrap.firstChild);
+      }
+      if (frag.childNodes.length) list.appendChild(frag);
+    } else {
+      list.innerHTML = shown.length
+        ? shown.map(httpRowHtml).join('')
+        : all.length
+          ? '<div class="conn-note">没有符合条件的请求，试试放宽状态码过滤或清空搜索词。</div>'
+          : '<div class="conn-note">还没有收到请求。客户端访问这个服务后，请求会实时出现在这里。</div>';
+    }
+
+    tab.reqPaintKey = key;
+    tab.reqPaintSeq = lastSeq;
+
+    $('#svc-http-count').textContent = `${all.length} 条`;
+    $('#svc-http-shown').textContent =
+      rows.length !== view.length ? `显示 ${rows.length} 条` : '';
+    if (tab.reqPaused) $('#svc-http-shown').textContent += ' · 已暂停';
+    $('#svc-http-rate').textContent = httpRateText(tab);
+    $('#svc-http-pause').textContent = tab.reqPaused ? '继续' : '暂停';
+    $('#svc-http-pause').classList.toggle('active', !!tab.reqPaused);
+
+    if ($('#svc-http-follow').checked && (atBottom || tab.reqForceScroll))
+      list.scrollTop = list.scrollHeight;
+    tab.reqForceScroll = false;
+  }
+
+  function httpRateText(tab) {
+    const marks = tab.reqMarks || [];
+    const now = Date.now();
+    const recent = marks.filter((t) => now - t < 5000).length;
+    tab.reqMarks = marks.filter((t) => now - t < 5000);
+    return recent ? `${(recent / 5).toFixed(1)} 条/秒` : '';
+  }
+
   function openServiceDetail(svcId) {
     const svc = state.services.find((s) => s.id === svcId);
     const tab = openTab({ kind: 'svc', svcId, title: `服务 · ${svc ? svc.name : svcId}`, syslog: null });
     if (svc && svc.proto === 'syslog' && tab.syslog === null) loadSvcSyslog(tab);
+    if (svc && (svc.proto === 'http' || svc.proto === 'speedtest') && tab.reqlog == null)
+      loadSvcHttpLog(tab);
     if (state.activeTab === tab.id) paintServiceDetail(tab);
     return tab;
   }
@@ -1064,12 +1201,39 @@
     $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
   }
 
+  /* 详情页「配置」区块：各协议把关键设置摊开 */
+  function serviceConfigRows(svc) {
+    const op = svc.options || {};
+    const rows = [];
+    const rootOr = (v) => v || '（默认目录）';
+    if (svc.proto === 'ftp') {
+      rows.push(['根目录', rootOr(op.root)]);
+      rows.push(['登录', op.anonymous ? '允许匿名' : `用户 ${op.user || 'ftp'}`]);
+      rows.push(['权限', op.readonly ? '只读' : '可写']);
+      if (op.pasv_ports) rows.push(['被动端口', `${op.pasv_ports[0]} - ${op.pasv_ports[1]}`]);
+      if (op.advertise) rows.push(['公告地址', op.advertise]);
+    } else if (svc.proto === 'tftp') {
+      rows.push(['根目录', rootOr(op.root)]);
+      rows.push(['权限', op.readonly ? '只读' : '可写']);
+      rows.push(['重传超时', `${op.timeout || 3} 秒`]);
+    } else if (svc.proto === 'http') {
+      rows.push(['根目录', rootOr(op.root)]);
+      rows.push(['模式', op.echo ? '回显请求内容' : '静态文件服务']);
+    } else if (svc.proto === 'speedtest') {
+      rows.push(['模式', 'LibreSpeed 测速页']);
+    } else {
+      rows.push(['回显', svc.echo ? '开启：收到的数据原样回给对端' : '关闭']);
+    }
+    return rows;
+  }
+
   function paintServiceDetail(tab) {
     const svc = state.services.find((s) => s.id === tab.svcId);
     const view = $('#svc-view');
     if (!svc) {
-      view.classList.remove('syslog-mode');
+      view.classList.remove('syslog-mode', 'httplog-mode');
       $('#svc-syslog-block').classList.add('hidden');
+      $('#svc-httplog-block').classList.add('hidden');
       $('#svc-title').textContent = '服务已删除';
       $('#svc-badge').textContent = '—';
       $('#svc-badge').className = 'svc-badge';
@@ -1080,8 +1244,11 @@
       return;
     }
     const isSyslog = svc.proto === 'syslog';
+    const isHttpLog = svc.proto === 'http' || svc.proto === 'speedtest';
     view.classList.toggle('syslog-mode', isSyslog);
+    view.classList.toggle('httplog-mode', isHttpLog);
     $('#svc-syslog-block').classList.toggle('hidden', !isSyslog);
+    $('#svc-httplog-block').classList.toggle('hidden', !isHttpLog);
 
     const title = `服务 · ${svc.name}`;
     if (tab.title !== title) {
@@ -1096,7 +1263,7 @@
       : `${PROTO_NAMES[svc.proto] || svc.proto} · ${bindLabel(svc.bind)} · :${svc.bind.port}${svc.bind2 ? ` · TCP :${svc.bind2.port}` : ''}`;
     $('#svc-toggle').textContent = svc.running ? '停止' : '启动';
 
-    /* syslog 走整页日志视图，通用指标/槽位/最近活动都不渲染 */
+    /* syslog / http 走整页日志视图，通用指标/槽位/最近活动都不渲染 */
     if (isSyslog) {
       const sev = tab.syslogSev || 'all';
       [...document.querySelectorAll('#svc-sev-chips .chip')].forEach((c) =>
@@ -1107,19 +1274,37 @@
       paintSvcSyslog(tab);
       return;
     }
+    if (isHttpLog) {
+      const st = tab.reqStatus || 'all';
+      [...document.querySelectorAll('#svc-status-chips .chip')].forEach((c) =>
+        c.classList.toggle('active', c.dataset.st === st)
+      );
+      if (document.activeElement !== $('#svc-http-search'))
+        $('#svc-http-search').value = tab.reqQuery || '';
+      paintSvcHttpLog(tab);
+      return;
+    }
 
     const slots = svc.slots || [];
     const okSlots = slots.filter((x) => x.ok).length;
-    const httpLike = svc.proto === 'http' || svc.proto === 'speedtest';
+    /* 指标按协议定制：不给用不上的字段留「—」 */
     const metrics = [
       ['进行中', String(svc.conns || 0)],
       ['峰值并发', String(svc.peak || 0)],
-      ['累计请求', httpLike || svc.requests ? String(svc.requests || 0) : '—'],
       ['运行时长', svc.running ? fmtUptime(svc.uptime_ms) : '—'],
       ['监听槽位', slots.length ? `${okSlots} / ${slots.length}` : '—'],
     ];
+    if (svc.proto === 'http' || svc.proto === 'speedtest')
+      metrics.splice(2, 0, ['累计请求', String(svc.requests || 0)]);
     $('#svc-metrics').innerHTML = metrics
       .map(([k, v]) => `<div class="metric"><span>${h(k)}</span><b>${h(v)}</b></div>`)
+      .join('');
+
+    /* 配置摘要：把对话框里的设置在这里露出来，免得每次点编辑才知道 */
+    $('#svc-config').innerHTML = serviceConfigRows(svc)
+      .map(
+        ([k, v]) => `<div class="cfg-row"><span class="cfg-key">${h(k)}</span><span class="cfg-val">${h(v)}</span></div>`
+      )
       .join('');
 
     $('#svc-slots').innerHTML = !svc.running
@@ -2979,6 +3164,51 @@
     paintSvcSyslog(tab);
   });
 
+  /* 详情页 HTTP 请求视图：状态码过滤、搜索、暂停、清空、自动滚动 */
+  $('#svc-http-follow').addEventListener('change', () => {
+    const tab = activeTab();
+    if (tab && tab.kind === 'svc') paintSvcHttpLog(tab);
+  });
+  $('#svc-status-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.reqStatus = btn.dataset.st;
+    [...document.querySelectorAll('#svc-status-chips .chip')].forEach((c) =>
+      c.classList.toggle('active', c === btn)
+    );
+    tab.reqForceScroll = true;
+    paintSvcHttpLog(tab);
+  });
+  $('#svc-http-search').addEventListener('input', (e) => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.reqQuery = e.target.value;
+    tab.reqForceScroll = true;
+    paintSvcHttpLog(tab);
+  });
+  $('#svc-http-pause').addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    tab.reqPaused = !tab.reqPaused;
+    tab.reqFrozenAt = tab.reqPaused ? (tab.reqlog || []).length : null;
+    if (!tab.reqPaused) tab.reqForceScroll = true;
+    paintSvcHttpLog(tab);
+  });
+  $('#svc-http-clear').addEventListener('click', async () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== 'svc') return;
+    try {
+      await api(`/api/services/${tab.svcId}/reqlog`, { method: 'DELETE' });
+    } catch (e) {
+      toast(errText(e));
+    }
+    tab.reqlog = [];
+    tab.reqForceScroll = true;
+    paintSvcHttpLog(tab);
+  });
+
   /* ---- 服务详情页操作 ---- */
   $('#svc-toggle').addEventListener('click', async () => {
     const tab = activeTab();
@@ -3016,13 +3246,14 @@
     if (tab && tab.kind === 'svc') openServiceLog(tab.svcId);
   });
 
-  /* 运行时长每秒走一格（syslog 日志流自己刷新，不做整页重建） */
+  /* 运行时长每秒走一格（日志型详情页由事件流自己刷新，不做整页重建） */
   setInterval(() => {
     if (document.hidden) return; /* 窗口不可见时不做任何定时渲染 */
     const tab = activeTab();
     if (!tab || tab.kind !== 'svc') return;
     const svc = state.services.find((s) => s.id === tab.svcId);
-    if (svc && svc.proto === 'syslog') return;
+    if (svc && (svc.proto === 'syslog' || svc.proto === 'http' || svc.proto === 'speedtest'))
+      return;
     paintServiceDetail(tab);
   }, 1000);
 

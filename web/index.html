@@ -290,12 +290,16 @@
             <button class="ghost-btn danger" id="svc-del">删除</button>
           </div>
 
-          <!-- 通用服务：指标 / 槽位 / 最近活动 -->
+          <!-- 通用服务：指标 / 槽位 / 配置 / 最近活动 -->
           <div class="svc-body" id="svc-body-generic">
             <div class="svc-metrics" id="svc-metrics"></div>
             <div class="svc-block">
               <h3>监听槽位</h3>
               <div id="svc-slots"></div>
+            </div>
+            <div class="svc-block" id="svc-config-block">
+              <h3>配置</h3>
+              <div id="svc-config"></div>
             </div>
             <div class="svc-block">
               <h3>最近活动</h3>
@@ -328,6 +332,30 @@
               <span class="muted" id="svc-log-rate"></span>
               <span class="spacer"></span>
               <label class="check inline"><input type="checkbox" id="svc-syslog-follow" checked> 自动滚动</label>
+            </div>
+          </div>
+
+          <!-- HTTP / 测速服务：请求日志视图 -->
+          <div class="svc-logview hidden" id="svc-httplog-block">
+            <div class="logview-toolbar">
+              <div class="sev-chips" id="svc-status-chips">
+                <button type="button" class="chip active" data-st="all">全部</button>
+                <button type="button" class="chip st-2xx" data-st="2">2xx</button>
+                <button type="button" class="chip st-3xx" data-st="3">3xx</button>
+                <button type="button" class="chip st-4xx" data-st="4">4xx</button>
+                <button type="button" class="chip st-5xx" data-st="5">5xx</button>
+              </div>
+              <input id="svc-http-search" class="logview-search" type="search" placeholder="搜索方法、路径或来源…">
+              <button class="ghost-btn" id="svc-http-pause">暂停</button>
+              <button class="ghost-btn" id="svc-http-clear">清空</button>
+            </div>
+            <div class="logview-body" id="svc-http-list"></div>
+            <div class="logview-status">
+              <span id="svc-http-count">0 条</span>
+              <span class="muted" id="svc-http-shown"></span>
+              <span class="muted" id="svc-http-rate"></span>
+              <span class="spacer"></span>
+              <label class="check inline"><input type="checkbox" id="svc-http-follow" checked> 自动滚动</label>
             </div>
           </div>
         </section>
