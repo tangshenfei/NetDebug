@@ -25,16 +25,18 @@ typedef struct nd_syslog_rec {
     char     body[ND_SYSLOG_TEXT];  /* 仅消息体，详情页分列显示用 */
 } nd_syslog_rec;
 
-/* HTTP 请求记录环形缓冲：HTTP/speedtest 服务详情页回放用 */
+/* HTTP 请求 / FTP·TFTP 传输记录环形缓冲：服务详情页回放用 */
 #define ND_HTTP_RING 500
 
 typedef struct nd_http_rec {
-    uint64_t ts;
-    int      status;     /* 0 = 未记录 */
-    int      dur_ms;
-    char     method[12];
-    char     path[256];
-    char     peer[64];
+    uint64_t    ts;
+    int         status;     /* HTTP 状态码；FTP/TFTP 传输为 0 */
+    int         dur_ms;
+    long long   bytes;      /* FTP/TFTP 传输字节数 */
+    char        kind[12];   /* "http" / "ftp-up" / "ftp-down" / "tftp-up" / "tftp-down" */
+    char        method[12]; /* HTTP 方法；FTP/TFTP 为 RETR/STOR/RRQ/WRQ */
+    char        path[256];  /* HTTP 路径；FTP/TFTP 为文件名 */
+    char        peer[64];
 } nd_http_rec;
 
 typedef struct nd_service {

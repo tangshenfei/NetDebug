@@ -323,6 +323,28 @@ body {
 }
 .logview-status .check.inline { margin: 0; font-size: 11px; }
 
+/* 详情页「传输记录」区块（FTP / TFTP） */
+.svc-xfer-head { display: flex; align-items: center; gap: 10px; }
+.svc-xfer-list {
+  max-height: 34vh; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 6px; background: var(--bg-elev);
+  font-family: var(--mono); font-size: 12px;
+}
+.xfer-row {
+  display: grid; grid-template-columns: 62px 52px minmax(0, 1fr) 76px 62px minmax(90px, 140px);
+  gap: 10px; padding: 3px 8px; border-radius: 4px; align-items: baseline;
+}
+.xfer-row:hover { background: rgba(255,255,255,.045); }
+.xfer-row .x-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.xfer-row .x-dir { font-size: 11px; font-weight: 600; }
+.xfer-row .x-dir.up { color: #7ee787; }
+.xfer-row .x-dir.down { color: #a8ceff; }
+.xfer-row .x-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xfer-row .x-bytes, .xfer-row .x-dur { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.xfer-row .x-peer { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc-xfer-list .conn-note { padding: 18px 10px; font-size: 12px; color: var(--muted); }
+
 /* 详情页「配置」区块 */
 .cfg-row {
   display: flex; gap: 12px; padding: 5px 10px; border-radius: 6px;
@@ -576,6 +598,12 @@ input::placeholder { color: #59636f; }
 .http-bar select { width: 110px; flex: 0 0 auto; }
 .http-bar input { flex: 1 1 160px; min-width: 0; font-family: var(--mono); }
 .http-bar button { flex: 0 0 auto; }
+/* 工具页固定宽度输入框（端口、凭据等），避免各页写 inline style */
+.http-bar input.w90 { flex: 0 0 90px; }
+.http-bar input.w110 { flex: 0 0 110px; }
+.http-bar input.w120 { flex: 0 0 120px; }
+.http-bar input.w140 { flex: 0 0 140px; }
+.http-bar input.w150 { flex: 0 0 150px; }
 .http-opts { display: flex; align-items: center; gap: 16px; font-size: 12px; }
 .http-opts input[type="number"] { width: 88px; }
 .http-status.ok { color: var(--green); }

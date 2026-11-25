@@ -950,6 +950,78 @@ await waitFor(p.ev, "document.getElementById('http-status').textContent.startsWi
 check((await p.ev("document.getElementById('http-status').textContent")).startsWith('404'), '404 状态');
 endCase();
 
+beginCase('会话详情页：连接信息与操作');
+{
+  /* 建会话 + 连到本机回显服务 */
+  const svc = await api('/api/services', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'UI 会话回显', proto: 'raw-tcp', echo: true,
+      bind: { kind: 'any', family: 'v4', port: 19106 },
+    }),
+  });
+  await api(`/api/services/${svc.id}/start`, { method: 'POST' });
+  const sess = await api('/api/sessions', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'UI 会话', transport: 'tcp', protocol: 'raw',
+      host: '127.0.0.1', port: 19106, family: 'v4',
+    }),
+  });
+  await api(`/api/sessions/${sess.id}/connect`, { method: 'POST' });
+  await sleep(900);
+  /* 触发前端刷新会话列表 */
+  await p.ev(`(() => { document.querySelector('#session-list')?.dispatchEvent(new Event('refresh')); })()`);
+  await sleep(3200);
+
+  /* 点「详情」 */
+  await p.ev(`(() => {
+    const b = [...document.querySelectorAll('#session-list button[data-sact="detail"]')]
+      .find(x => x.closest('.sess').innerText.includes('UI 会话'));
+    if (b) b.click();
+  })()`);
+  await sleep(1100);
+  check(await p.ev("!document.getElementById('sess-view').classList.contains('hidden')"), '会话详情视图打开');
+  eq(await p.ev("document.getElementById('sess-title').textContent"), 'UI 会话', '标题是会话名');
+  check((await p.ev("document.getElementById('sess-badge').textContent")) === '已连接', '徽章显示已连接');
+  const meta = await p.ev("document.getElementById('sess-meta').textContent");
+  check(meta.includes('127.0.0.1:19106'), `meta 显示目标地址（实际 ${meta}）`);
+  const metrics = await p.ev("[...document.querySelectorAll('#sess-metrics .metric')].map(m => m.innerText.replace(/\\s+/g,' ').trim())");
+  check(metrics.some((m) => m.includes('状态')), '指标有状态');
+  check(metrics.some((m) => m.includes('连接时长')), '指标有连接时长');
+  const infoTxt = await p.ev("document.getElementById('sess-info').innerText");
+  check(infoTxt.includes('协议') && infoTxt.includes('目标'), '连接信息有协议与目标');
+  check(infoTxt.includes('TCP'), '协议显示 TCP');
+
+  /* 打开终端 */
+  await p.ev("document.getElementById('sess-open').click()");
+  await sleep(1200);
+  check(
+    (await p.ev("[...document.querySelectorAll('#tabs .tab')].map(t => t.innerText)")).some((t) => t.includes('终端')),
+    '从详情页能打开终端'
+  );
+
+  /* 断开 */
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find(x => x.innerText.includes('会话'));
+    if (t) t.click();
+  })()`);
+  await sleep(600);
+  await p.ev("document.getElementById('sess-disconnect').click()");
+  await sleep(1200);
+  check((await p.ev("document.getElementById('sess-badge').textContent")) !== '已连接', '断开后徽章不再显示已连接');
+
+  /* 清理标签与服务 */
+  await p.ev(`(() => {
+    [...document.querySelectorAll('#tabs .tab')].forEach(t => { const c = t.querySelector('.tab-close'); if (c) c.click(); });
+  })()`);
+  await sleep(600);
+  await api(`/api/sessions/${sess.id}`, { method: 'DELETE' });
+  await api(`/api/services/${svc.id}`, { method: 'DELETE' });
+  await sleep(400);
+}
+endCase();
+
 beginCase('FTP 工具连接与列目录');
 await p.ev("document.getElementById('btn-ftp').click()");
 await sleep(300);

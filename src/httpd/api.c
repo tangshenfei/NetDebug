@@ -1627,9 +1627,10 @@ int nd_api_handle(void *vreq)
                 nd_service_put(s);
                 return 1;
             }
-            /* HTTP/speedtest 最近请求记录：GET 回放 / DELETE 清空 */
+            /* HTTP 请求 / FTP·TFTP 传输记录：GET 回放 / DELETE 清空 */
             if (!strcmp(rest, "/reqlog") && (is_get || is_delete)) {
-                if (!strcmp(s->proto, "http") || !strcmp(s->proto, "speedtest")) {
+                if (!strcmp(s->proto, "http") || !strcmp(s->proto, "speedtest") ||
+                    !strcmp(s->proto, "ftp") || !strcmp(s->proto, "tftp")) {
                     if (is_get) {
                         nd_http_rec *recs =
                             (nd_http_rec *)malloc(ND_HTTP_RING * sizeof(*recs));
@@ -1647,6 +1648,8 @@ int nd_api_handle(void *vreq)
                             cJSON_AddNumberToObject(o, "ts", (double)recs[i].ts);
                             cJSON_AddNumberToObject(o, "status", recs[i].status);
                             cJSON_AddNumberToObject(o, "dur_ms", recs[i].dur_ms);
+                            cJSON_AddNumberToObject(o, "bytes", (double)recs[i].bytes);
+                            cJSON_AddStringToObject(o, "kind", recs[i].kind);
                             cJSON_AddStringToObject(o, "method", recs[i].method);
                             cJSON_AddStringToObject(o, "path", recs[i].path);
                             cJSON_AddStringToObject(o, "peer", recs[i].peer);
@@ -1665,7 +1668,7 @@ int nd_api_handle(void *vreq)
                         }
                     }
                 } else {
-                    nd_http_error_json(req->fd, 400, ND_E_PARAM, "该服务不是 http/speedtest");
+                    nd_http_error_json(req->fd, 400, ND_E_PARAM, "该服务不是 http/speedtest/ftp/tftp");
                 }
                 nd_service_put(s);
                 return 1;

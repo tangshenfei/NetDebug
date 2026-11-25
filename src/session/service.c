@@ -194,6 +194,7 @@ static void *accept_thread(void *arg)
                         nd_strlcpy(cfg.root, s->tftp_root, sizeof(cfg.root));
                         cfg.readonly = s->tftp_readonly;
                         cfg.timeout_s = s->tftp_timeout;
+                        cfg.service_id = s->id;
                         nd_tftp_server_start(fds[i].fd, &laddr, &peer, buf, (size_t)rn, &cfg);
                         continue;
                     }
@@ -232,6 +233,7 @@ static void *accept_thread(void *arg)
                     cfg.pasv_min = s->pasv_min;
                     cfg.pasv_max = s->pasv_max;
                     nd_strlcpy(cfg.advertise, s->ftp_advertise, sizeof(cfg.advertise));
+                    cfg.service_id = s->id;
                     if (nd_ftp_server_start(cfd, &peer, &local, &cfg) != 0)
                         nd_net_close(cfd);
                     continue;

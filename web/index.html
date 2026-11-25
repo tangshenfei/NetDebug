@@ -210,9 +210,9 @@
         <section class="ftp-view hidden" id="ftp-view">
           <div class="http-bar">
             <input id="ftp-host" type="text" placeholder="127.0.0.1" value="127.0.0.1">
-            <input id="ftp-port" type="number" value="21" style="width:90px">
-            <input id="ftp-user" type="text" placeholder="用户" value="anonymous" style="width:140px">
-            <input id="ftp-pass" type="password" placeholder="密码" style="width:140px">
+            <input id="ftp-port" class="w90" type="number" value="21">
+            <input id="ftp-user" class="w140" type="text" placeholder="用户" value="anonymous">
+            <input id="ftp-pass" class="w140" type="password" placeholder="密码">
             <button class="primary" id="ftp-connect">连接</button>
           </div>
           <div class="ftp-status">
@@ -230,7 +230,7 @@
         <section class="ftp-view hidden" id="tftp-view">
           <div class="http-bar">
             <input id="tftp-host" type="text" placeholder="127.0.0.1" value="127.0.0.1">
-            <input id="tftp-port" type="number" value="69" style="width:90px">
+            <input id="tftp-port" class="w90" type="number" value="69">
             <input id="tftp-remote" type="text" placeholder="远端文件名，例如 firmware.bin">
             <button class="primary" id="tftp-get">下载</button>
           </div>
@@ -248,11 +248,11 @@
 
         <section class="ftp-view hidden" id="smb-view">
           <div class="http-bar">
-            <input id="smb-host" type="text" placeholder="服务器地址" value="127.0.0.1" style="width:150px">
+            <input id="smb-host" class="w150" type="text" placeholder="服务器地址" value="127.0.0.1">
             <input id="smb-share" type="text" placeholder="共享名，例如 share">
-            <input id="smb-user" type="text" placeholder="用户" style="width:120px">
-            <input id="smb-pass" type="password" placeholder="密码" style="width:120px">
-            <input id="smb-domain" type="text" placeholder="域（可空）" style="width:110px">
+            <input id="smb-user" class="w120" type="text" placeholder="用户">
+            <input id="smb-pass" class="w120" type="password" placeholder="密码">
+            <input id="smb-domain" class="w110" type="text" placeholder="域（可空）">
             <button class="primary" id="smb-connect">连接</button>
           </div>
           <div class="ftp-status">
@@ -300,6 +300,15 @@
             <div class="svc-block" id="svc-config-block">
               <h3>配置</h3>
               <div id="svc-config"></div>
+            </div>
+            <div class="svc-block hidden" id="svc-xfer-block">
+              <h3 class="svc-xfer-head">
+                <span>传输记录</span>
+                <span class="muted" id="svc-xfer-count"></span>
+                <span class="spacer"></span>
+                <button class="ghost-btn" id="svc-xfer-clear">清空</button>
+              </h3>
+              <div class="svc-xfer-list" id="svc-xfer-list"></div>
             </div>
             <div class="svc-block">
               <h3>最近活动</h3>
@@ -356,6 +365,30 @@
               <span class="muted" id="svc-http-rate"></span>
               <span class="spacer"></span>
               <label class="check inline"><input type="checkbox" id="svc-http-follow" checked> 自动滚动</label>
+            </div>
+          </div>
+        </section>
+
+        <!-- 客户端会话详情 -->
+        <section id="sess-view" class="svc-view hidden">
+          <div class="svc-bar">
+            <span class="svc-name" id="sess-title">会话</span>
+            <span class="svc-badge" id="sess-badge">未连接</span>
+            <span class="muted" id="sess-meta"></span>
+            <span class="spacer"></span>
+            <button class="ghost-btn" id="sess-open">打开终端</button>
+            <button class="ghost-btn" id="sess-disconnect">断开</button>
+            <button class="ghost-btn danger" id="sess-del">删除</button>
+          </div>
+          <div class="svc-body">
+            <div class="svc-metrics" id="sess-metrics"></div>
+            <div class="svc-block">
+              <h3>连接信息</h3>
+              <div id="sess-info"></div>
+            </div>
+            <div class="svc-block hidden" id="sess-error-block">
+              <h3>最近错误</h3>
+              <div id="sess-error"></div>
             </div>
           </div>
         </section>
