@@ -323,6 +323,35 @@ body {
 }
 .logview-status .check.inline { margin: 0; font-size: 11px; }
 
+/* 网络诊断工具页 */
+.diag-view { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 12px; min-height: 0; }
+.diag-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.diag-tab {
+  padding: 5px 14px; border-radius: 7px; font-size: 12px; cursor: pointer;
+  background: var(--bg-elev); border: 1px solid var(--line); color: var(--muted);
+}
+.diag-tab:hover { color: var(--text); border-color: var(--line-strong, var(--line)); }
+.diag-tab.active { color: var(--text); border-color: var(--accent, #4f8cff); background: rgba(79,140,255,.12); }
+.diag-pane { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.diag-summary { font-size: 12px; color: var(--muted); font-family: var(--mono); min-height: 16px; }
+.diag-summary b { color: var(--text); }
+.diag-out {
+  flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg-elev); padding: 6px 8px; font-family: var(--mono); font-size: 12px;
+  min-height: 120px;
+}
+.diag-row {
+  display: grid; gap: 10px; padding: 3px 8px; border-radius: 4px; align-items: baseline;
+}
+.diag-row:hover { background: rgba(255,255,255,.045); }
+.diag-row .d-seq { color: var(--muted); }
+.diag-row .d-ok { color: #7ee787; }
+.diag-row .d-bad { color: #ff8a8a; }
+.diag-row .d-rtt { text-align: right; font-variant-numeric: tabular-nums; }
+.diag-row .d-muted { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diag-row .d-port-open { color: #7ee787; font-weight: 600; }
+.diag-out .conn-note { padding: 18px 10px; }
+
 /* 详情页「传输记录」区块（FTP / TFTP） */
 .svc-xfer-head { display: flex; align-items: center; gap: 10px; }
 .svc-xfer-list {

@@ -576,8 +576,9 @@
     log: '#log-view',
     svc: '#svc-view',
     sess: '#sess-view',
+    diag: '#diag-view',
   };
-  const TOOL_TITLES = { http: 'HTTP 调试', ftp: 'FTP 文件', smb: 'SMB 文件', tftp: 'TFTP 传输' };
+  const TOOL_TITLES = { http: 'HTTP 调试', ftp: 'FTP 文件', smb: 'SMB 文件', tftp: 'TFTP 传输', diag: '网络诊断' };
 
   function tabById(id) {
     return state.tabs.find((t) => t.id === id) || null;
@@ -2922,6 +2923,289 @@
   });
 
   $('#btn-http').addEventListener('click', openHttpPanel);
+
+  /* ---------- 网络诊断工具 ---------- */
+
+  function openDiagPanel() {
+    openTab({ kind: 'diag', title: TOOL_TITLES.diag });
+    if (!state.diagInit) {
+      state.diagInit = true;
+      runArp();
+    }
+  }
+
+  function diagTab(name) {
+    state.diagTab = name;
+    [...document.querySelectorAll('.diag-tab')].forEach((b) =>
+      b.classList.toggle('active', b.dataset.dtab === name)
+    );
+    document
+      .querySelectorAll('.diag-pane')
+      .forEach((p) => p.classList.toggle('hidden', p.id !== `dtab-${name}`));
+    if (name === 'arp') runArp();
+  }
+
+  function diagNote(el, text) {
+    el.innerHTML = `<div class="conn-note">${h(text)}</div>`;
+  }
+
+  function fmtMs(us) {
+    const ms = Number(us || 0) / 1000;
+    if (!ms) return '<1ms';
+    return ms < 10 ? ms.toFixed(2) + 'ms' : ms.toFixed(1) + 'ms';
+  }
+
+  async function runPing() {
+    const host = $('#ping-host').value.trim();
+    const out = $('#ping-out');
+    const sum = $('#ping-summary');
+    if (!host) return diagNote(out, '请填写目标地址');
+    out.innerHTML = '<div class="conn-note">正在 ping…</div>';
+    sum.textContent = '';
+    try {
+      const r = await api('/api/net/ping', {
+        method: 'POST',
+        body: JSON.stringify({
+          host,
+          count: Number($('#ping-count').value) || 4,
+          size: Number($('#ping-size').value) || 32,
+          timeout_ms: Number($('#ping-timeout').value) || 1000,
+        }),
+      });
+      if (r.error) {
+        diagNote(out, errText(r));
+        return;
+      }
+      out.innerHTML = r.replies
+        .map((x) => {
+          const ok = x.ok;
+          return `<div class="diag-row" style="grid-template-columns:38px 70px 54px 1fr">
+            <span class="d-seq">#${x.seq}</span>
+            <span class="${ok ? 'd-ok' : 'd-bad'}">${ok ? '收到回应' : '失败'}</span>
+            <span class="d-rtt">${ok ? fmtMs(x.rtt_us) : '—'}</span>
+            <span class="d-muted">${
+              ok
+                ? `${h(x.addr)} · ${x.bytes} 字节 · TTL ${x.ttl}`
+                : h(x.err || '超时')
+            }</span>
+          </div>`;
+        })
+        .join('');
+      sum.innerHTML = `发送 <b>${r.sent}</b> · 接收 <b>${r.recv}</b> · 丢包 <b>${r.loss_pct.toFixed(
+        0
+      )}%</b>${r.recv ? ` · 往返 最小 <b>${fmtMs(r.min_us)}</b> 平均 <b>${fmtMs(r.avg_us)}</b> 最大 <b>${fmtMs(r.max_us)}</b>` : ''}`;
+    } catch (e) {
+      diagNote(out, errText(e));
+    }
+  }
+
+  async function runScan() {
+    const host = $('#scan-host').value.trim();
+    const ports = $('#scan-ports').value.trim();
+    const out = $('#scan-out');
+    const sum = $('#scan-summary');
+    if (!host || !ports) return diagNote(out, '请填写目标地址和端口');
+    out.innerHTML = '<div class="conn-note">扫描中，端口多时需要一会儿…</div>';
+    sum.textContent = '';
+    try {
+      const r = await api('/api/net/scan', {
+        method: 'POST',
+        body: JSON.stringify({
+          host,
+          ports,
+          timeout_ms: Number($('#scan-timeout').value) || 600,
+        }),
+      });
+      if (r.error) {
+        diagNote(out, errText(r));
+        return;
+      }
+      out.innerHTML = r.open.length
+        ? r.open
+            .map(
+              (x) => `<div class="diag-row" style="grid-template-columns:70px 1fr">
+            <span class="d-port-open">${x.port}/tcp</span>
+            <span class="d-muted">${h(x.banner || '（无 banner）')}</span>
+          </div>`
+            )
+            .join('')
+        : '<div class="conn-note">没有发现开放端口</div>';
+      sum.innerHTML = `扫描 <b>${r.scanned}</b> 个端口 · 开放 <b>${r.open_count}</b> 个`;
+    } catch (e) {
+      diagNote(out, errText(e));
+    }
+  }
+
+  async function runDns() {
+    const name = $('#dns-name').value.trim();
+    const out = $('#dns-out');
+    const sum = $('#dns-summary');
+    if (!name) return diagNote(out, '请填写域名');
+    out.innerHTML = '<div class="conn-note">查询中…</div>';
+    sum.textContent = '';
+    try {
+      const r = await api('/api/net/dns', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          type: $('#dns-type').value,
+          server: $('#dns-server').value.trim(),
+        }),
+      });
+      if (r.error) {
+        diagNote(out, errText(r));
+        return;
+      }
+      out.innerHTML = r.answers.length
+        ? r.answers
+            .map(
+              (a) => `<div class="diag-row" style="grid-template-columns:70px 1fr 80px">
+            <span class="d-ok">${h(a.type)}</span>
+            <span class="d-muted">${h(a.value)}</span>
+            <span class="d-rtt d-muted">TTL ${a.ttl}</span>
+          </div>`
+            )
+            .join('')
+        : '<div class="conn-note">没有解析结果</div>';
+      sum.innerHTML = `<b>${h(name)}</b> · ${r.answers.length} 条记录`;
+    } catch (e) {
+      diagNote(out, errText(e));
+    }
+  }
+
+  async function runArp() {
+    const out = $('#arp-out');
+    const sum = $('#arp-summary');
+    if (!out) return;
+    const filter = ($('#arp-filter').value || '').trim().toLowerCase();
+    try {
+      const rows = await api('/api/net/arp');
+      if (rows.error) return diagNote(out, errText(rows));
+      const list = (Array.isArray(rows) ? rows : []).filter(
+        (x) =>
+          !filter ||
+          x.ip.toLowerCase().includes(filter) ||
+          x.mac.toLowerCase().includes(filter)
+      );
+      out.innerHTML = list.length
+        ? list
+            .map(
+              (x) => `<div class="diag-row" style="grid-template-columns:150px 170px 1fr">
+            <span class="d-ok">${h(x.ip)}</span>
+            <span class="d-muted">${h(x.mac)}</span>
+            <span class="d-muted">${h(x.iface || '')}</span>
+          </div>`
+            )
+            .join('')
+        : '<div class="conn-note">没有 ARP 记录</div>';
+      sum.innerHTML = `共 <b>${list.length}</b> 条${filter ? `（过滤自 ${rows.length} 条）` : ''}`;
+    } catch (e) {
+      diagNote(out, errText(e));
+    }
+  }
+
+  /* 子网计算器：纯前端 */
+  function ipToInt(s) {
+    const parts = String(s).trim().split('.');
+    if (parts.length !== 4) return null;
+    let v = 0;
+    for (const p of parts) {
+      const n = Number(p);
+      if (!/^\d+$/.test(p) || n < 0 || n > 255) return null;
+      v = (v << 8) | n;
+    }
+    return v >>> 0;
+  }
+  function intToIp(v) {
+    return [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255].join('.');
+  }
+  function maskToPrefix(m) {
+    let p = 0;
+    let seen0 = false;
+    for (let i = 31; i >= 0; i--) {
+      const bit = (m >>> i) & 1;
+      if (bit) {
+        if (seen0) return -1;
+        p++;
+      } else seen0 = true;
+    }
+    return p;
+  }
+
+  function runSubnet() {
+    const raw = $('#subnet-input').value.trim();
+    const out = $('#subnet-out');
+    const sum = $('#subnet-summary');
+    if (!raw) return diagNote(out, '请输入 IP/掩码，例如 192.168.1.10/24');
+    const m = raw.match(/^([^/]+)(?:\/(.+))?$/);
+    const ip = m ? ipToInt(m[1]) : null;
+    if (ip === null) return diagNote(out, 'IP 地址格式不正确');
+
+    let prefix;
+    let mask;
+    const mtxt = (m[2] || '').trim();
+    if (!mtxt) {
+      prefix = 32;
+      mask = 0xffffffff;
+    } else if (/^\d+$/.test(mtxt)) {
+      prefix = Number(mtxt);
+      if (prefix < 0 || prefix > 32) return diagNote(out, '前缀长度应在 0-32 之间');
+      mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    } else {
+      mask = ipToInt(mtxt);
+      if (mask === null) return diagNote(out, '掩码格式不正确');
+      prefix = maskToPrefix(mask);
+      if (prefix < 0) return diagNote(out, '掩码不连续');
+    }
+
+    const network = (ip & mask) >>> 0;
+    const broadcast = (network | (~mask >>> 0)) >>> 0;
+    const hosts = prefix >= 31 ? 0 : broadcast - network - 1;
+    const first = prefix >= 31 ? network : network + 1;
+    const last = prefix >= 31 ? broadcast : broadcast - 1;
+
+    const rows = [
+      ['网络地址', intToIp(network)],
+      ['广播地址', intToIp(broadcast)],
+      ['子网掩码', intToIp(mask)],
+      ['前缀长度', `/${prefix}`],
+      ['可用主机数', String(hosts)],
+      ['可用范围', prefix >= 31 ? '无（点对点）' : `${intToIp(first)} - ${intToIp(last)}`],
+      ['IP 类别', ip >= 0xe0000000 ? 'D/E 组播或保留' : ip >= 0xc0000000 ? 'C' : ip >= 0x80000000 ? 'B' : 'A'],
+      ['是否私有', ip >= 0x0a000000 && ip <= 0x0affffff ? '是（10/8）' : ip >= 0xac100000 && ip <= 0xac1fffff ? '是（172.16/12）' : ip >= 0xc0a80000 && ip <= 0xc0a8ffff ? '是（192.168/16）' : '否'],
+    ];
+    out.innerHTML = rows
+      .map(
+        ([k, v]) => `<div class="diag-row" style="grid-template-columns:110px 1fr">
+          <span class="d-muted">${h(k)}</span><span class="d-ok">${h(v)}</span></div>`
+      )
+      .join('');
+    sum.innerHTML = `<b>${intToIp(network)}/${prefix}</b>`;
+  }
+
+  $('#btn-diag').addEventListener('click', openDiagPanel);
+  $('#diag-tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('.diag-tab');
+    if (b) diagTab(b.dataset.dtab);
+  });
+  $('#ping-run').addEventListener('click', runPing);
+  $('#ping-host').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') runPing();
+  });
+  $('#scan-run').addEventListener('click', runScan);
+  $('#scan-ports').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') runScan();
+  });
+  $('#dns-run').addEventListener('click', runDns);
+  $('#dns-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') runDns();
+  });
+  $('#arp-refresh').addEventListener('click', runArp);
+  $('#arp-filter').addEventListener('input', runArp);
+  $('#subnet-run').addEventListener('click', runSubnet);
+  $('#subnet-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') runSubnet();
+  });
   $('#http-send').addEventListener('click', sendHttp);
   $('#http-url').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') sendHttp();

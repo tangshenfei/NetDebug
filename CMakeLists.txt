@@ -46,6 +46,7 @@ set(ND_LIB_SOURCES
     src/core/ring.c
     src/core/util.c
     src/platform/platform.c
+    src/platform/netdiag.c
     src/platform/gui.c
     src/platform/netio.c
     src/platform/serial.c

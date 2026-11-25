@@ -8,6 +8,7 @@
 #include "core/util.h"
 #include "net/bind_json.h"
 #include "net/iface.h"
+#include "platform/netdiag.h"
 #include "platform/netio.h"
 #include "platform/platform.h"
 #include "platform/serial.h"
@@ -1072,6 +1073,184 @@ int nd_api_handle(void *vreq)
 
     if (!strcmp(req->path, "/api/net/test-bind") && is_post) {
         test_bind(req->fd, req);
+        return 1;
+    }
+
+    /* ---------- 网络诊断：ping / ARP / 端口扫描 / DNS ---------- */
+
+    if (!strcmp(req->path, "/api/net/ping") && is_post) {
+        cJSON *jb = cJSON_Parse(req->body ? req->body : "");
+        cJSON *res;
+        const char *host = jb ? cJSON_GetStringValue(cJSON_GetObjectItem(jb, "host")) : NULL;
+        int count = jb ? (int)cJSON_GetNumberValue(cJSON_GetObjectItem(jb, "count")) : 0;
+        int size = jb ? (int)cJSON_GetNumberValue(cJSON_GetObjectItem(jb, "size")) : 0;
+        int timeout = jb ? (int)cJSON_GetNumberValue(cJSON_GetObjectItem(jb, "timeout_ms")) : 0;
+        nd_ping_reply replies[16];
+        int n, i, ok = 0;
+        uint64_t total_us = 0, min_us = 0, max_us = 0;
+
+        if (!host || !host[0]) {
+            cJSON_Delete(jb);
+            nd_http_error_json(req->fd, 400, ND_E_PARAM, "缺少目标地址");
+            return 1;
+        }
+        if (count <= 0)
+            count = 4;
+        if (count > 10)
+            count = 10;
+        if (timeout <= 0)
+            timeout = 1000;
+        n = nd_net_ping(host, count, size, timeout, replies, 16);
+        if (n < 0) {
+            cJSON_Delete(jb);
+            nd_http_error_json(req->fd, 400, ND_E_PARAM, "ping 参数不合法");
+            return 1;
+        }
+        res = cJSON_CreateObject();
+        cJSON_AddStringToObject(res, "host", host);
+        {
+            cJSON *arr = cJSON_CreateArray();
+            for (i = 0; i < n; i++) {
+                cJSON *o = cJSON_CreateObject();
+                cJSON_AddNumberToObject(o, "seq", replies[i].seq);
+                cJSON_AddBoolToObject(o, "ok", replies[i].ok);
+                cJSON_AddNumberToObject(o, "ttl", replies[i].ttl);
+                cJSON_AddNumberToObject(o, "bytes", replies[i].bytes);
+                cJSON_AddNumberToObject(o, "rtt_us", (double)replies[i].rtt_us);
+                cJSON_AddStringToObject(o, "addr", replies[i].addr);
+                if (replies[i].err[0])
+                    cJSON_AddStringToObject(o, "err", replies[i].err);
+                cJSON_AddItemToArray(arr, o);
+                if (replies[i].ok) {
+                    ok++;
+                    total_us += replies[i].rtt_us;
+                    if (!min_us || replies[i].rtt_us < min_us)
+                        min_us = replies[i].rtt_us;
+                    if (replies[i].rtt_us > max_us)
+                        max_us = replies[i].rtt_us;
+                }
+            }
+            cJSON_AddItemToObject(res, "replies", arr);
+        }
+        cJSON_AddNumberToObject(res, "sent", n);
+        cJSON_AddNumberToObject(res, "recv", ok);
+        cJSON_AddNumberToObject(res, "loss_pct", n ? (double)(n - ok) * 100.0 / n : 0.0);
+        cJSON_AddNumberToObject(res, "min_us", (double)min_us);
+        cJSON_AddNumberToObject(res, "avg_us", ok ? (double)total_us / ok : 0.0);
+        cJSON_AddNumberToObject(res, "max_us", (double)max_us);
+        nd_http_json(req->fd, 200, res);
+        cJSON_Delete(res);
+        cJSON_Delete(jb);
+        return 1;
+    }
+
+    if (!strcmp(req->path, "/api/net/arp") && is_get) {
+        nd_arp_entry ents[256];
+        int n = nd_net_arp_table(ents, 256);
+        cJSON *arr = cJSON_CreateArray();
+        if (n < 0)
+            n = 0;
+        for (int i = 0; i < n; i++) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "ip", ents[i].ip);
+            cJSON_AddStringToObject(o, "mac", ents[i].mac);
+            cJSON_AddStringToObject(o, "iface", ents[i].iface);
+            cJSON_AddBoolToObject(o, "valid", ents[i].state);
+            cJSON_AddItemToArray(arr, o);
+        }
+        nd_http_json(req->fd, 200, arr);
+        cJSON_Delete(arr);
+        return 1;
+    }
+
+    if (!strcmp(req->path, "/api/net/scan") && is_post) {
+        cJSON *jb = cJSON_Parse(req->body ? req->body : "");
+        const char *host = jb ? cJSON_GetStringValue(cJSON_GetObjectItem(jb, "host")) : NULL;
+        const char *ports = jb ? cJSON_GetStringValue(cJSON_GetObjectItem(jb, "ports")) : NULL;
+        int timeout = jb ? (int)cJSON_GetNumberValue(cJSON_GetObjectItem(jb, "timeout_ms")) : 0;
+        nd_scan_result *results;
+        int n, i, open_cnt = 0;
+        cJSON *res;
+
+        if (!host || !host[0] || !ports || !ports[0]) {
+            cJSON_Delete(jb);
+            nd_http_error_json(req->fd, 400, ND_E_PARAM, "缺少目标或端口列表");
+            return 1;
+        }
+        if (timeout <= 0)
+            timeout = 600;
+        results = (nd_scan_result *)calloc(1024, sizeof(*results));
+        if (!results) {
+            cJSON_Delete(jb);
+            nd_http_error_json(req->fd, 500, ND_E_INTERNAL, "out of memory");
+            return 1;
+        }
+        n = nd_net_port_scan(host, ports, timeout, results, 1024);
+        if (n < 0)
+            n = 0;
+        res = cJSON_CreateObject();
+        cJSON_AddStringToObject(res, "host", host);
+        {
+            cJSON *arr = cJSON_CreateArray();
+            for (i = 0; i < n; i++) {
+                cJSON *o;
+                if (!results[i].open)
+                    continue;
+                o = cJSON_CreateObject();
+                cJSON_AddNumberToObject(o, "port", results[i].port);
+                if (results[i].banner[0])
+                    cJSON_AddStringToObject(o, "banner", results[i].banner);
+                cJSON_AddItemToArray(arr, o);
+                open_cnt++;
+            }
+            cJSON_AddItemToObject(res, "open", arr);
+        }
+        cJSON_AddNumberToObject(res, "scanned", n);
+        cJSON_AddNumberToObject(res, "open_count", open_cnt);
+        nd_http_json(req->fd, 200, res);
+        cJSON_Delete(res);
+        free(results);
+        cJSON_Delete(jb);
+        return 1;
+    }
+
+    if (!strcmp(req->path, "/api/net/dns") && is_post) {
+        cJSON *jb = cJSON_Parse(req->body ? req->body : "");
+        const char *name = jb ? cJSON_GetStringValue(cJSON_GetObjectItem(jb, "name")) : NULL;
+        const char *type = jb ? cJSON_GetStringValue(cJSON_GetObjectItem(jb, "type")) : NULL;
+        const char *server = jb ? cJSON_GetStringValue(cJSON_GetObjectItem(jb, "server")) : NULL;
+        nd_dns_ans ans[32];
+        char err[256] = "";
+        int n, i;
+        cJSON *res;
+
+        if (!name || !name[0]) {
+            cJSON_Delete(jb);
+            nd_http_error_json(req->fd, 400, ND_E_PARAM, "缺少查询名称");
+            return 1;
+        }
+        n = nd_net_dns_query(name, type && type[0] ? type : "A", server, ans, 32, err, sizeof(err));
+        if (n < 0) {
+            cJSON_Delete(jb);
+            nd_http_error_json(req->fd, 400, ND_E_PARAM, err[0] ? err : "DNS 查询失败");
+            return 1;
+        }
+        res = cJSON_CreateObject();
+        cJSON_AddStringToObject(res, "name", name);
+        {
+            cJSON *arr = cJSON_CreateArray();
+            for (i = 0; i < n; i++) {
+                cJSON *o = cJSON_CreateObject();
+                cJSON_AddStringToObject(o, "type", ans[i].type);
+                cJSON_AddStringToObject(o, "value", ans[i].value);
+                cJSON_AddNumberToObject(o, "ttl", ans[i].ttl);
+                cJSON_AddItemToArray(arr, o);
+            }
+            cJSON_AddItemToObject(res, "answers", arr);
+        }
+        nd_http_json(req->fd, 200, res);
+        cJSON_Delete(res);
+        cJSON_Delete(jb);
         return 1;
     }
 

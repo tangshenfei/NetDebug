@@ -44,6 +44,7 @@
           <button class="tool-btn" id="btn-ftp">FTP 文件</button>
           <button class="tool-btn" id="btn-smb">SMB 文件</button>
           <button class="tool-btn" id="btn-tftp">TFTP 传输</button>
+          <button class="tool-btn" id="btn-diag">网络诊断</button>
         </div>
       </div>
 
@@ -265,6 +266,81 @@
             <label class="ghost-btn">上传<input id="smb-upload" type="file" hidden></label>
           </div>
           <div id="smb-list" class="ftp-list"></div>
+        </section>
+
+        <!-- 网络诊断：ping / 端口扫描 / DNS / ARP / 子网计算 -->
+        <section class="diag-view hidden" id="diag-view">
+          <div class="diag-tabs" id="diag-tabs">
+            <button class="diag-tab active" data-dtab="ping">Ping</button>
+            <button class="diag-tab" data-dtab="scan">端口扫描</button>
+            <button class="diag-tab" data-dtab="dns">DNS 查询</button>
+            <button class="diag-tab" data-dtab="arp">ARP 表</button>
+            <button class="diag-tab" data-dtab="subnet">子网计算</button>
+          </div>
+
+          <!-- Ping -->
+          <div class="diag-pane" id="dtab-ping">
+            <div class="http-bar">
+              <input id="ping-host" type="text" placeholder="目标地址或域名，例如 192.168.1.1">
+              <input id="ping-count" class="w90" type="number" value="4" min="1" max="10" title="次数">
+              <input id="ping-size" class="w90" type="number" value="32" min="8" max="1400" title="负载字节">
+              <input id="ping-timeout" class="w110" type="number" value="1000" min="100" title="超时(ms)">
+              <button class="primary" id="ping-run">开始</button>
+            </div>
+            <div class="diag-summary" id="ping-summary"></div>
+            <div class="diag-out" id="ping-out"></div>
+          </div>
+
+          <!-- 端口扫描 -->
+          <div class="diag-pane hidden" id="dtab-scan">
+            <div class="http-bar">
+              <input id="scan-host" type="text" placeholder="目标地址，例如 192.168.1.1">
+              <input id="scan-ports" type="text" placeholder="端口，如 22,80,443,8000-8100" value="22,80,443,445,3389,8080">
+              <input id="scan-timeout" class="w110" type="number" value="600" min="100" title="单端口超时(ms)">
+              <button class="primary" id="scan-run">扫描</button>
+            </div>
+            <div class="diag-summary" id="scan-summary"></div>
+            <div class="diag-out" id="scan-out"></div>
+          </div>
+
+          <!-- DNS -->
+          <div class="diag-pane hidden" id="dtab-dns">
+            <div class="http-bar">
+              <input id="dns-name" type="text" placeholder="域名，例如 www.example.com">
+              <select id="dns-type" class="w90">
+                <option>A</option>
+                <option>AAAA</option>
+                <option>CNAME</option>
+                <option>MX</option>
+                <option>NS</option>
+                <option>TXT</option>
+              </select>
+              <input id="dns-server" type="text" placeholder="DNS 服务器（留空用系统默认）">
+              <button class="primary" id="dns-run">查询</button>
+            </div>
+            <div class="diag-summary" id="dns-summary"></div>
+            <div class="diag-out" id="dns-out"></div>
+          </div>
+
+          <!-- ARP -->
+          <div class="diag-pane hidden" id="dtab-arp">
+            <div class="http-bar">
+              <input id="arp-filter" type="text" placeholder="过滤 IP / MAC（可选）">
+              <button class="primary" id="arp-refresh">刷新</button>
+            </div>
+            <div class="diag-summary" id="arp-summary"></div>
+            <div class="diag-out" id="arp-out"></div>
+          </div>
+
+          <!-- 子网计算 -->
+          <div class="diag-pane hidden" id="dtab-subnet">
+            <div class="http-bar">
+              <input id="subnet-input" type="text" placeholder="IP/掩码，例如 192.168.1.10/24 或 10.0.0.0/255.255.255.0">
+              <button class="primary" id="subnet-run">计算</button>
+            </div>
+            <div class="diag-summary" id="subnet-summary"></div>
+            <div class="diag-out" id="subnet-out"></div>
+          </div>
         </section>
 
         <section id="log-view" class="log-view hidden">

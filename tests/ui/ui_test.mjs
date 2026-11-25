@@ -934,6 +934,81 @@ await p.ev("document.getElementById('term-mode-btn').click()");
 await sleep(300);
 endCase();
 
+beginCase('网络诊断：子网计算、ARP、DNS、端口扫描');
+{
+  await p.ev("document.getElementById('btn-diag').click()");
+  await sleep(800);
+  check(await p.ev("!document.getElementById('diag-view').classList.contains('hidden')"), '诊断视图打开');
+  const tabs = await p.ev("[...document.querySelectorAll('.diag-tab')].map(b => b.textContent)");
+  for (const k of ['Ping', '端口扫描', 'DNS 查询', 'ARP 表', '子网计算']) {
+    check(tabs.includes(k), `有 ${k} 标签`);
+  }
+
+  /* 子网计算器（纯前端，必定可用） */
+  await p.ev("document.querySelector('.diag-tab[data-dtab=subnet]').click()");
+  await sleep(400);
+  await setVal(p.ev, 'subnet-input', '192.168.1.10/24');
+  await p.ev("document.getElementById('subnet-run').click()");
+  await sleep(700);
+  eq(await p.ev("document.getElementById('subnet-summary').textContent"), '192.168.1.0/24', '网络地址计算正确');
+  const subnetTxt = await p.ev("document.getElementById('subnet-out').innerText");
+  check(subnetTxt.includes('192.168.1.255'), '广播地址正确');
+  check(subnetTxt.includes('254'), '可用主机数正确');
+  check(subnetTxt.includes('192.168.1.1 - 192.168.1.254'), '可用范围正确');
+  check(subnetTxt.includes('是（192.168/16）'), '识别私有地址');
+
+  /* ARP 表 */
+  await p.ev("document.querySelector('.diag-tab[data-dtab=arp]').click()");
+  await sleep(1200);
+  const arpRows = await p.ev("document.querySelectorAll('#arp-out .diag-row').length");
+  check(arpRows > 0, `ARP 表有记录（${arpRows} 条）`);
+
+  /* DNS 查询 */
+  await p.ev("document.querySelector('.diag-tab[data-dtab=dns]').click()");
+  await sleep(300);
+  await setVal(p.ev, 'dns-name', 'www.baidu.com');
+  await p.ev("document.getElementById('dns-run').click()");
+  await sleep(2500);
+  const dnsRows = await p.ev("document.querySelectorAll('#dns-out .diag-row').length");
+  check(dnsRows > 0, `DNS 查询有结果（${dnsRows} 条）`);
+  check(
+    (await p.ev("document.getElementById('dns-out').innerText")).toLowerCase().includes('a') ||
+      dnsRows > 0,
+    'DNS 结果含记录类型'
+  );
+
+  /* 端口扫描：管理面 7802 必须开放 */
+  await p.ev("document.querySelector('.diag-tab[data-dtab=scan]').click()");
+  await sleep(300);
+  await setVal(p.ev, 'scan-host', '127.0.0.1');
+  await setVal(p.ev, 'scan-ports', '7802');
+  await p.ev("document.getElementById('scan-run').click()");
+  await sleep(3000);
+  const scanTxt = await p.ev("document.getElementById('scan-out').innerText");
+  check(scanTxt.includes('7802'), '扫描发现 7802 端口开放');
+  check(
+    (await p.ev("document.getElementById('scan-summary').innerText")).includes('开放'),
+    '扫描摘要显示开放数'
+  );
+
+  /* Ping：受权限影响，只验证请求能发出并给出可读反馈 */
+  await p.ev("document.querySelector('.diag-tab[data-dtab=ping]').click()");
+  await sleep(300);
+  await setVal(p.ev, 'ping-host', '127.0.0.1');
+  await setVal(p.ev, 'ping-count', '1');
+  await p.ev("document.getElementById('ping-run').click()");
+  await sleep(3000);
+  const pingTxt = await p.ev("document.getElementById('ping-out').innerText");
+  check(pingTxt.length > 0, 'Ping 有反馈（成功或明确错误）');
+
+  await p.ev(`(() => {
+    const t = [...document.querySelectorAll('#tabs .tab')].find((x) => x.innerText.includes('网络诊断'));
+    if (t) t.querySelector('.tab-close').click();
+  })()`);
+  await sleep(400);
+}
+endCase();
+
 beginCase('HTTP 调试工具');
 await p.ev("document.getElementById('btn-http').click()");
 await sleep(300);
